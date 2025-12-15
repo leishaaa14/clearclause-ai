@@ -18,6 +18,7 @@ import SummaryTab from './components/analysis/SummaryTab.jsx'
 import ClausesTab from './components/analysis/ClausesTab.jsx'
 import RisksTab from './components/analysis/RisksTab.jsx'
 import CompareTab from './components/analysis/CompareTab.jsx'
+import ComparisonResults from './components/analysis/ComparisonResults.jsx'
 
 // Charts
 import RiskPieChart from './components/charts/RiskPieChart.jsx'
@@ -53,6 +54,8 @@ function App() {
     const [stage, setStage] = useState(null)
 
     const [result, setResult] = useState(null)
+    const [isComparison, setIsComparison] = useState(false)
+    const [comparisonDocuments, setComparisonDocuments] = useState([])
     const [history, setHistory] = useState(() => {
         return JSON.parse(localStorage.getItem('history')) || []
     })
@@ -75,9 +78,18 @@ function App() {
     }
 
     // ---------------- SIMULATED ANALYSIS FLOW ----------------
-    const runAnalysis = () => {
+    const runAnalysis = (analysisType = 'single', documents = []) => {
         setLoading(true)
         setStage('textract')
+        
+        // Set comparison mode if multiple documents
+        if (analysisType === 'comparison' || documents.length > 1) {
+            setIsComparison(true)
+            setComparisonDocuments(documents)
+        } else {
+            setIsComparison(false)
+            setComparisonDocuments([])
+        }
 
         setTimeout(() => {
             setStage('bedrock')
@@ -88,7 +100,9 @@ function App() {
             setLoading(false)
             setStage(null)
 
-            const newItem = `Analysis – ${new Date().toLocaleString()}`
+            const newItem = isComparison ? 
+                `Comparison Analysis – ${documents.length} documents – ${new Date().toLocaleString()}` :
+                `Analysis – ${new Date().toLocaleString()}`
             const updated = [newItem, ...history]
             setHistory(updated)
             localStorage.setItem('history', JSON.stringify(updated))
@@ -207,28 +221,34 @@ function App() {
                             {/* RESULTS */}
                             {result && !loading && (
                                 <>
-                                    <Tabs active={activeTab} setActive={setActiveTab} />
-
-                                    {activeTab === 'Summary' && (
+                                    {isComparison ? (
+                                        <ComparisonResults documents={comparisonDocuments} />
+                                    ) : (
                                         <>
-                                            <SummaryTab data={result.summary} />
-                                            <RiskPieChart risks={result.risks} />
+                                            <Tabs active={activeTab} setActive={setActiveTab} />
+
+                                            {activeTab === 'Summary' && (
+                                                <>
+                                                    <SummaryTab data={result.summary} />
+                                                    <RiskPieChart risks={result.risks} />
+                                                </>
+                                            )}
+
+                                            {activeTab === 'Clauses' && (
+                                                <ClausesTab clauses={result.clauses} />
+                                            )}
+
+                                            {activeTab === 'Risks' && (
+                                                <RisksTab risks={result.risks} />
+                                            )}
+
+                                            {activeTab === 'Compare' && (
+                                                <CompareTab
+                                                    original="Company may terminate services at any time."
+                                                    simplified="They can stop your service whenever they want."
+                                                />
+                                            )}
                                         </>
-                                    )}
-
-                                    {activeTab === 'Clauses' && (
-                                        <ClausesTab clauses={result.clauses} />
-                                    )}
-
-                                    {activeTab === 'Risks' && (
-                                        <RisksTab risks={result.risks} />
-                                    )}
-
-                                    {activeTab === 'Compare' && (
-                                        <CompareTab
-                                            original="Company may terminate services at any time."
-                                            simplified="They can stop your service whenever they want."
-                                        />
                                     )}
                                 </>
                             )}
