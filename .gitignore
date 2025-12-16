@@ -34,3 +34,17 @@ coverage/
 # Temporary folders
 tmp/
 temp/
+
+# Large datasets and Kaggle data
+archive/
+data/
+datasets/
+CUAD_v1/
+*.pdf
+*.zip
+
+# Additional large file formats
+*.csv
+*.json
+*.xlsx
+*.xls
