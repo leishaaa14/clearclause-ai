@@ -22,7 +22,7 @@ export class RiskAnalyzer {
       'Compliance',
       'Operational'
     ];
-    
+
     this.riskLevels = ['Low', 'Medium', 'High', 'Critical'];
     this.businessImpactLevels = ['Low', 'Medium', 'High', 'Very High'];
   }
@@ -43,15 +43,30 @@ export class RiskAnalyzer {
     }
 
     if (clauses.length === 0) {
-      return { risks: [] };
+      return {
+        risks: [],
+        summary: {
+          totalRisks: 0,
+          criticalRisks: 0,
+          highRisks: 0,
+          mediumRisks: 0,
+          lowRisks: 0,
+          averageConfidence: 0,
+          riskDistribution: {},
+          highestRisk: null
+        }
+      };
     }
 
-    if (!this.modelManager.isLoaded) {
-      throw new Error('Model must be loaded before performing risk analysis');
+    // Use AI model if available, otherwise fall back to rule-based approach
+    if (this.modelManager && this.modelManager.isLoaded) {
+      return await this._analyzeRisksWithAI(clauses, options);
+    } else {
+      return await this._analyzeRisksRuleBased(clauses, options);
     }
 
     const prompt = this._buildRiskAnalysisPrompt(clauses, options);
-    
+
     try {
       const response = await this.modelManager.inference(prompt, {
         temperature: 0.1,
@@ -60,10 +75,10 @@ export class RiskAnalyzer {
       });
 
       const parsedResponse = JSON.parse(response);
-      
+
       // Validate and enhance the response
       const risks = this._validateAndEnhanceRisks(parsedResponse.risks || [], clauses);
-      
+
       return {
         risks: risks,
         summary: {
@@ -72,7 +87,7 @@ export class RiskAnalyzer {
           highRisks: risks.filter(r => r.severity === 'High').length,
           mediumRisks: risks.filter(r => r.severity === 'Medium').length,
           lowRisks: risks.filter(r => r.severity === 'Low').length,
-          averageConfidence: risks.length > 0 ? 
+          averageConfidence: risks.length > 0 ?
             risks.reduce((sum, r) => sum + r.confidence, 0) / risks.length : 0
         }
       };
@@ -105,7 +120,7 @@ export class RiskAnalyzer {
     }
 
     const prompt = this._buildMitigationPrompt(risks, options);
-    
+
     try {
       const response = await this.modelManager.inference(prompt, {
         temperature: 0.2,
@@ -114,13 +129,13 @@ export class RiskAnalyzer {
       });
 
       const parsedResponse = JSON.parse(response);
-      
+
       // Validate and enhance the recommendations
       const recommendations = this._validateAndEnhanceRecommendations(
-        parsedResponse.recommendations || [], 
+        parsedResponse.recommendations || [],
         risks
       );
-      
+
       return {
         recommendations: recommendations,
         summary: {
@@ -211,11 +226,168 @@ export class RiskAnalyzer {
   }
 
   /**
+   * Analyze risks using AI model
+   * @param {Array} clauses - Array of clause objects
+   * @param {Object} options - Analysis options
+   * @returns {Promise<Object>} - Risk analysis results
+   * @private
+   */
+  async _analyzeRisksWithAI(clauses, options = {}) {
+    const prompt = this._buildRiskAnalysisPrompt(clauses, options);
+
+    try {
+      const response = await this.modelManager.inference(prompt, {
+        temperature: 0.1,
+        maxTokens: 4000,
+        format: 'json'
+      });
+
+      const parsedResponse = JSON.parse(response);
+
+      // Validate and enhance the response
+      const risks = this._validateAndEnhanceRisks(parsedResponse.risks || [], clauses);
+
+      return this._buildRiskSummary(risks);
+    } catch (error) {
+      throw new Error(`AI risk analysis failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Analyze risks using rule-based approach (fallback)
+   * @param {Array} clauses - Array of clause objects
+   * @param {Object} options - Analysis options
+   * @returns {Promise<Object>} - Risk analysis results
+   * @private
+   */
+  async _analyzeRisksRuleBased(clauses, options = {}) {
+    const risks = [];
+    let riskId = 1;
+
+    for (const clause of clauses) {
+      const clauseRisks = this._identifyClauseRisks(clause, riskId);
+      risks.push(...clauseRisks);
+      riskId += clauseRisks.length;
+    }
+
+    return this._buildRiskSummary(risks);
+  }
+
+  /**
+   * Identify risks in a specific clause using rule-based approach
+   * @param {Object} clause - Clause object
+   * @param {number} startId - Starting risk ID
+   * @returns {Array} - Array of identified risks
+   * @private
+   */
+  _identifyClauseRisks(clause, startId) {
+    const risks = [];
+    const text = clause.text.toLowerCase();
+    let riskId = startId;
+
+    // Payment terms risks
+    if (clause.type === 'payment_terms' || text.includes('payment')) {
+      if (text.includes('90 days') || text.includes('ninety') || text.includes('120 days')) {
+        risks.push({
+          id: `risk_${riskId++}`,
+          title: 'Extended Payment Terms Risk',
+          description: 'Long payment terms may impact cash flow and increase collection risk',
+          severity: 'Medium',
+          category: 'Financial',
+          affectedClauses: [clause.id],
+          explanation: 'Extended payment terms can strain cash flow and increase the risk of non-payment',
+          confidence: 0.85,
+          riskScore: 0.7,
+          businessImpact: 'Medium',
+          mitigation: 'Consider negotiating shorter payment terms or requiring deposits'
+        });
+      }
+    }
+
+    // Liability risks
+    if (clause.type === 'liability_limitation' || text.includes('liability')) {
+      if (text.includes('unlimited') || text.includes('no limit')) {
+        risks.push({
+          id: `risk_${riskId++}`,
+          title: 'Unlimited Liability Exposure',
+          description: 'Unlimited liability creates significant financial exposure',
+          severity: 'High',
+          category: 'Legal',
+          affectedClauses: [clause.id],
+          explanation: 'Unlimited liability exposes the party to potentially catastrophic financial losses',
+          confidence: 0.95,
+          riskScore: 0.9,
+          businessImpact: 'Very High',
+          mitigation: 'Negotiate liability caps and ensure adequate insurance coverage'
+        });
+      }
+    }
+
+    // Termination risks
+    if (clause.type === 'termination_clause' || text.includes('terminat')) {
+      if (!text.includes('notice') || text.includes('immediate')) {
+        risks.push({
+          id: `risk_${riskId++}`,
+          title: 'Inadequate Termination Protection',
+          description: 'Termination clause may not provide adequate notice or protection',
+          severity: 'Medium',
+          category: 'Contract Management',
+          affectedClauses: [clause.id],
+          explanation: 'Insufficient termination notice can disrupt business operations',
+          confidence: 0.75,
+          riskScore: 0.6,
+          businessImpact: 'Medium',
+          mitigation: 'Negotiate adequate notice periods and termination protections'
+        });
+      }
+    }
+
+    return risks;
+  }
+
+  /**
+   * Build comprehensive risk summary
+   * @param {Array} risks - Array of risk objects
+   * @returns {Object} - Risk analysis results with summary
+   * @private
+   */
+  _buildRiskSummary(risks) {
+    const summary = {
+      totalRisks: risks.length,
+      criticalRisks: risks.filter(r => r.severity === 'Critical').length,
+      highRisks: risks.filter(r => r.severity === 'High').length,
+      mediumRisks: risks.filter(r => r.severity === 'Medium').length,
+      lowRisks: risks.filter(r => r.severity === 'Low').length,
+      averageConfidence: risks.length > 0 ?
+        risks.reduce((sum, r) => sum + r.confidence, 0) / risks.length : 0
+    };
+
+    // Add risk distribution
+    const riskDistribution = {};
+    risks.forEach(risk => {
+      riskDistribution[risk.severity] = (riskDistribution[risk.severity] || 0) + 1;
+    });
+    summary.riskDistribution = riskDistribution;
+
+    // Find highest risk
+    const sortedRisks = [...risks].sort((a, b) => {
+      const severityOrder = { 'Critical': 4, 'High': 3, 'Medium': 2, 'Low': 1 };
+      return severityOrder[b.severity] - severityOrder[a.severity];
+    });
+    summary.highestRisk = sortedRisks.length > 0 ? sortedRisks[0] : null;
+
+    return {
+      risks: risks,
+      summary: summary
+    };
+  }
+
+  /**
    * Build risk analysis prompt for AI model
    * @private
    */
   _buildRiskAnalysisPrompt(clauses, options) {
-    const clauseTexts = clauses.map((clause, index) => 
+    const clauseTexts = clauses.map((clause, index) =>
       `${index + 1}. [${clause.type || 'unknown'}] ${clause.text}`
     ).join('\n\n');
 
@@ -269,7 +441,7 @@ Example response format:
    * @private
    */
   _buildMitigationPrompt(risks, options) {
-    const riskDescriptions = risks.map((risk, index) => 
+    const riskDescriptions = risks.map((risk, index) =>
       `${index + 1}. [${risk.severity}] ${risk.title}: ${risk.description}`
     ).join('\n\n');
 
@@ -333,7 +505,7 @@ Example response format:
         explanation: risk.explanation || 'Risk explanation not provided',
         confidence: this._validateConfidence(risk.confidence),
         riskScore: this._validateRiskScore(risk.riskScore),
-        businessImpact: this.businessImpactLevels.includes(risk.businessImpact) ? 
+        businessImpact: this.businessImpactLevels.includes(risk.businessImpact) ?
           risk.businessImpact : 'Medium'
       };
 

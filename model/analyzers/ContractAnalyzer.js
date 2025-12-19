@@ -14,20 +14,8 @@ import { DocumentParser } from '../parsers/DocumentParser.js';
 import { ClauseExtractor } from '../extractors/ClauseExtractor.js';
 import { RiskAnalyzer } from './RiskAnalyzer.js';
 import { TextPreprocessor } from '../preprocessing/TextPreprocessor.js';
-import winston from 'winston';
-
-// Configure logger for contract analysis
-const logger = winston.createLogger({
-  level: 'info',
-  format: winston.format.combine(
-    winston.format.timestamp(),
-    winston.format.json()
-  ),
-  transports: [
-    new winston.transports.Console(),
-    new winston.transports.File({ filename: 'contract-analyzer.log' })
-  ]
-});
+import { logger } from '../core/Logger.js';
+import { metricsCollector } from '../core/MetricsCollector.js';
 
 export class ContractAnalyzer {
   constructor(config = {}) {
@@ -37,24 +25,24 @@ export class ContractAnalyzer {
     this.clauseExtractor = new ClauseExtractor();
     this.riskAnalyzer = new RiskAnalyzer(this.modelManager);
     this.textPreprocessor = new TextPreprocessor();
-    
+
     // Analysis configuration
     this.config = {
       enableClauseExtraction: config.enableClauseExtraction !== false,
       enableRiskAnalysis: config.enableRiskAnalysis !== false,
       enableRecommendations: config.enableRecommendations !== false,
-      confidenceThreshold: config.confidenceThreshold || 0.5,
+      confidenceThreshold: config.confidenceThreshold || 0.3, // Lowered threshold for better detection
       maxProcessingTime: config.maxProcessingTime || 30000, // 30 seconds
       ...config
     };
-    
+
     // Structured prompting templates
     this.promptTemplates = {
       clauseExtraction: this._buildClauseExtractionTemplate(),
       riskAnalysis: this._buildRiskAnalysisTemplate(),
       recommendations: this._buildRecommendationsTemplate()
     };
-    
+
     // Performance tracking
     this.performanceMetrics = {
       totalAnalyses: 0,
@@ -73,16 +61,18 @@ export class ContractAnalyzer {
   async analyzeContract(documentInput, options = {}) {
     const startTime = Date.now();
     const analysisId = `analysis_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    
+
     try {
-      logger.info('Starting contract analysis', {
-        analysisId,
+      // Log analysis start with comprehensive context
+      logger.logAnalysisStart(analysisId, {
         documentType: options.documentType || 'unknown',
-        enabledFeatures: {
-          clauseExtraction: this.config.enableClauseExtraction,
-          riskAnalysis: this.config.enableRiskAnalysis,
-          recommendations: this.config.enableRecommendations
-        }
+        enableClauseExtraction: this.config.enableClauseExtraction,
+        enableRiskAnalysis: this.config.enableRiskAnalysis,
+        enableRecommendations: this.config.enableRecommendations,
+        textLength: typeof documentInput === 'string' ? documentInput.length :
+          Buffer.isBuffer(documentInput) ? documentInput.length : 0,
+        confidenceThreshold: this.config.confidenceThreshold,
+        title: options.title
       });
 
       // Validate inputs
@@ -90,16 +80,16 @@ export class ContractAnalyzer {
 
       // Step 1: Document parsing and preprocessing
       const parsedDocument = await this._parseAndPreprocessDocument(documentInput, options);
-      
+
       // Step 2: Clause extraction and categorization
       const clauses = await this._extractAndCategorizeClauses(parsedDocument.text, options);
-      
+
       // Step 3: Risk analysis
       const riskAnalysis = await this._performRiskAnalysis(clauses, options);
-      
+
       // Step 4: Generate recommendations
       const recommendations = await this._generateRecommendations(riskAnalysis.risks, options);
-      
+
       // Step 5: Aggregate and format results
       const results = await this._aggregateResults({
         analysisId,
@@ -114,24 +104,43 @@ export class ContractAnalyzer {
       // Update performance metrics
       this._updatePerformanceMetrics(startTime, true);
 
-      logger.info('Contract analysis completed successfully', {
-        analysisId,
-        processingTime: Date.now() - startTime,
-        totalClauses: results.summary.totalClauses,
-        totalRisks: results.risks.length,
-        totalRecommendations: results.recommendations.length
+      // Log successful completion with comprehensive metrics
+      const processingTime = Date.now() - startTime;
+      logger.logAnalysisComplete(analysisId, results, processingTime);
+
+      // Record metrics
+      metricsCollector.recordAnalysis({
+        success: true,
+        processingTime,
+        tokenUsage: results.metadata?.tokenUsage || 0,
+        confidence: results.metadata?.confidence || 0
       });
 
       return results;
     } catch (error) {
       this._updatePerformanceMetrics(startTime, false);
-      
-      logger.error('Contract analysis failed', {
-        analysisId,
-        error: error.message,
-        processingTime: Date.now() - startTime
+
+      const processingTime = Date.now() - startTime;
+
+      // Log failure with comprehensive context
+      logger.logAnalysisFailure(analysisId, error, processingTime, {
+        documentType: options.documentType,
+        textLength: typeof documentInput === 'string' ? documentInput.length :
+          Buffer.isBuffer(documentInput) ? documentInput.length : 0,
+        enabledFeatures: {
+          clauseExtraction: this.config.enableClauseExtraction,
+          riskAnalysis: this.config.enableRiskAnalysis,
+          recommendations: this.config.enableRecommendations
+        }
       });
-      
+
+      // Record failure metrics
+      metricsCollector.recordAnalysis({
+        success: false,
+        processingTime,
+        error: error.message
+      });
+
       throw new Error(`Contract analysis failed: ${error.message}`);
     }
   }
@@ -148,17 +157,46 @@ export class ContractAnalyzer {
     }
 
     try {
-      logger.debug('Starting clause extraction', { textLength: text.length });
+      const extractionStartTime = Date.now();
+      logger.logWorkflowStep('clause extraction', {
+        textLength: text.length,
+        method: this.modelManager.isLoaded ? 'ai_model' : 'rule_based'
+      });
 
+      let clauses;
       // Use AI model for intelligent clause extraction if available
       if (this.modelManager.isLoaded) {
-        return await this._extractClausesWithAI(text, options);
+        clauses = await this._extractClausesWithAI(text, options);
       } else {
+        // Log fallback event
+        logger.logFallback('model_not_loaded', {
+          modelLoaded: false,
+          healthStatus: this.modelManager.healthStatus
+        });
+
         // Fallback to rule-based extraction
-        return await this._extractClausesRuleBased(text, options);
+        clauses = await this._extractClausesRuleBased(text, options);
       }
+
+      const extractionTime = Date.now() - extractionStartTime;
+
+      // Log clause extraction completion
+      logger.logClauseExtraction(clauses, {
+        extractionTime,
+        method: this.modelManager.isLoaded ? 'ai_model' : 'rule_based'
+      });
+
+      // Record metrics
+      metricsCollector.recordClauseExtraction({
+        clauseCount: clauses.length,
+        confidence: clauses.length > 0 ?
+          clauses.reduce((sum, c) => sum + (c.confidence || 0), 0) / clauses.length : 0,
+        processingTime: extractionTime
+      });
+
+      return clauses;
     } catch (error) {
-      logger.error('Clause extraction failed', { error: error.message });
+      logger.logger.error('Clause extraction failed', { error: error.message });
       throw new Error(`Clause extraction failed: ${error.message}`);
     }
   }
@@ -175,17 +213,48 @@ export class ContractAnalyzer {
     }
 
     try {
-      logger.debug('Starting risk assessment', { clauseCount: clauses.length });
+      const riskStartTime = Date.now();
+      logger.logWorkflowStep('risk assessment', {
+        clauseCount: clauses.length,
+        method: this.modelManager.isLoaded ? 'ai_model' : 'fallback'
+      });
 
-      return await this.riskAnalyzer.analyzeRisks(clauses, options);
+      const riskAnalysis = await this.riskAnalyzer.analyzeRisks(clauses, options);
+      const riskTime = Date.now() - riskStartTime;
+
+      // Log risk analysis completion
+      logger.logRiskAnalysis(riskAnalysis.risks || [], {
+        analysisTime: riskTime,
+        method: this.modelManager.isLoaded ? 'ai_model' : 'fallback'
+      });
+
+      // Record metrics
+      const risks = riskAnalysis.risks || [];
+      const riskLevels = risks.reduce((counts, risk) => {
+        counts[risk.severity] = (counts[risk.severity] || 0) + 1;
+        return counts;
+      }, {});
+
+      metricsCollector.recordRiskAnalysis({
+        riskCount: risks.length,
+        riskLevels,
+        confidence: risks.length > 0 ?
+          risks.reduce((sum, r) => sum + (r.confidence || 0), 0) / risks.length : 0,
+        processingTime: riskTime
+      });
+
+      return riskAnalysis;
     } catch (error) {
       // If model is not loaded, return empty risks but don't fail
       if (error.message.includes('Model must be loaded')) {
-        logger.warn('Risk assessment skipped due to model not being loaded');
+        logger.logFallback('model_not_loaded_risk_analysis', {
+          modelLoaded: false,
+          healthStatus: this.modelManager.healthStatus
+        });
         return { risks: [] };
       }
-      
-      logger.error('Risk assessment failed', { error: error.message });
+
+      logger.logger.error('Risk assessment failed', { error: error.message });
       throw new Error(`Risk assessment failed: ${error.message}`);
     }
   }
@@ -202,18 +271,18 @@ export class ContractAnalyzer {
     }
 
     try {
-      logger.debug('Starting recommendation generation', { riskCount: risks.length });
+      logger.logger.debug('Starting recommendation generation', { riskCount: risks.length });
 
       const mitigationResult = await this.riskAnalyzer.generateMitigationStrategies(risks, options);
       return mitigationResult.recommendations || [];
     } catch (error) {
       // If model is not loaded, return empty recommendations but don't fail
       if (error.message.includes('Model must be loaded')) {
-        logger.warn('Recommendation generation skipped due to model not being loaded');
+        logger.logger.warn('Recommendation generation skipped due to model not being loaded');
         return [];
       }
-      
-      logger.error('Recommendation generation failed', { error: error.message });
+
+      logger.logger.error('Recommendation generation failed', { error: error.message });
       throw new Error(`Recommendation generation failed: ${error.message}`);
     }
   }
@@ -226,8 +295,16 @@ export class ContractAnalyzer {
     return {
       ...this.performanceMetrics,
       modelStatus: this.modelManager.getModelStatus(),
-      successRate: this.performanceMetrics.totalAnalyses > 0 ? 
-        this.performanceMetrics.successfulAnalyses / this.performanceMetrics.totalAnalyses : 0
+      successRate: this.performanceMetrics.totalAnalyses > 0 ?
+        this.performanceMetrics.successfulAnalyses / this.performanceMetrics.totalAnalyses : 0,
+
+      // Include comprehensive metrics from collectors
+      comprehensiveMetrics: metricsCollector.getMetrics(),
+      performanceSummary: metricsCollector.getPerformanceSummary(),
+      errorAnalysis: metricsCollector.getErrorAnalysis(),
+
+      // Include logging metrics
+      loggingMetrics: logger.getMetrics()
     };
   }
 
@@ -238,21 +315,21 @@ export class ContractAnalyzer {
    */
   async initialize(modelConfig = {}) {
     try {
-      logger.info('Initializing ContractAnalyzer');
-      
+      logger.logger.info('Initializing ContractAnalyzer');
+
       const success = await this.modelManager.loadModel(modelConfig);
       if (!success) {
-        logger.warn('Model loading failed, analyzer will use fallback methods');
+        logger.logger.warn('Model loading failed, analyzer will use fallback methods');
       }
-      
-      logger.info('ContractAnalyzer initialized successfully', {
+
+      logger.logger.info('ContractAnalyzer initialized successfully', {
         modelLoaded: success,
         modelName: this.modelManager.modelConfig?.modelName
       });
-      
+
       return true;
     } catch (error) {
-      logger.error('ContractAnalyzer initialization failed', { error: error.message });
+      logger.logger.error('ContractAnalyzer initialization failed', { error: error.message });
       return false;
     }
   }
@@ -263,11 +340,11 @@ export class ContractAnalyzer {
    */
   async cleanup() {
     try {
-      logger.info('Cleaning up ContractAnalyzer resources');
+      logger.logger.info('Cleaning up ContractAnalyzer resources');
       await this.modelManager.unloadModel();
-      logger.info('ContractAnalyzer cleanup completed');
+      logger.logger.info('ContractAnalyzer cleanup completed');
     } catch (error) {
-      logger.error('ContractAnalyzer cleanup failed', { error: error.message });
+      logger.logger.error('ContractAnalyzer cleanup failed', { error: error.message });
     }
   }
 
@@ -279,11 +356,11 @@ export class ContractAnalyzer {
    */
   async _parseAndPreprocessDocument(documentInput, options) {
     const documentType = options.documentType || this._detectDocumentType(documentInput);
-    
+
     // Parse document based on type
     const parsedDocument = await this.documentParser.parseDocument(
-      documentInput, 
-      documentType, 
+      documentInput,
+      documentType,
       options.parseOptions || {}
     );
 
@@ -310,18 +387,42 @@ export class ContractAnalyzer {
       return [];
     }
 
-    // Identify clauses
-    const identifiedClauses = await this.clauseExtractor.identifyClauses(text);
-    
-    // Categorize clauses
-    const categorizedClauses = await this.clauseExtractor.categorizeClauses(identifiedClauses);
-    
-    // Filter by confidence threshold
-    const filteredClauses = categorizedClauses.filter(
-      clause => clause.confidence >= this.config.confidenceThreshold
-    );
+    try {
+      // Log clause extraction start
+      logger.logWorkflowStep('clause extraction start', {
+        textLength: text.length,
+        confidenceThreshold: this.config.confidenceThreshold
+      });
 
-    return filteredClauses;
+      // Identify clauses
+      const identifiedClauses = await this.clauseExtractor.identifyClauses(text);
+
+      logger.logWorkflowStep('clauses identified', {
+        clauseCount: identifiedClauses.length
+      });
+
+      // Categorize clauses
+      const categorizedClauses = await this.clauseExtractor.categorizeClauses(identifiedClauses);
+
+      logger.logWorkflowStep('clauses categorized', {
+        categorizedCount: categorizedClauses.length
+      });
+
+      // Filter by confidence threshold
+      const filteredClauses = categorizedClauses.filter(
+        clause => clause.confidence >= this.config.confidenceThreshold
+      );
+
+      logger.logWorkflowStep('clause extraction complete', {
+        finalClauseCount: filteredClauses.length,
+        filteredOut: categorizedClauses.length - filteredClauses.length
+      });
+
+      return filteredClauses;
+    } catch (error) {
+      logger.logger.error('Clause extraction failed', { error: error.message });
+      throw error;
+    }
   }
 
   /**
@@ -338,7 +439,7 @@ export class ContractAnalyzer {
     } catch (error) {
       // If model is not loaded, return empty risks but don't fail the analysis
       if (error.message.includes('Model must be loaded')) {
-        logger.warn('Risk analysis skipped due to model not being loaded');
+        logger.logger.warn('Risk analysis skipped due to model not being loaded');
         return { risks: [] };
       }
       throw error;
@@ -356,15 +457,15 @@ export class ContractAnalyzer {
 
     try {
       const mitigationResult = await this.riskAnalyzer.generateMitigationStrategies(
-        risks, 
+        risks,
         options.recommendationOptions || {}
       );
-      
+
       return mitigationResult.recommendations || [];
     } catch (error) {
       // If model is not loaded, return empty recommendations but don't fail the analysis
       if (error.message.includes('Model must be loaded')) {
-        logger.warn('Recommendation generation skipped due to model not being loaded');
+        logger.logger.warn('Recommendation generation skipped due to model not being loaded');
         return [];
       }
       throw error;
@@ -432,7 +533,7 @@ export class ContractAnalyzer {
    */
   async _extractClausesWithAI(text, options) {
     const prompt = this._generateStructuredPrompt('clauseExtraction', { text, options });
-    
+
     try {
       const response = await this.modelManager.inference(prompt, {
         temperature: 0.1,
@@ -443,7 +544,7 @@ export class ContractAnalyzer {
       const parsedResponse = JSON.parse(response);
       return this._validateClauseExtractionResponse(parsedResponse);
     } catch (error) {
-      logger.warn('AI clause extraction failed, falling back to rule-based', { error: error.message });
+      logger.logger.warn('AI clause extraction failed, falling back to rule-based', { error: error.message });
       return await this._extractClausesRuleBased(text, options);
     }
   }
@@ -468,7 +569,7 @@ export class ContractAnalyzer {
     }
 
     let prompt = template;
-    
+
     // Replace variables in template
     Object.entries(variables).forEach(([key, value]) => {
       const placeholder = `{{${key.toUpperCase()}}}`;
@@ -603,20 +704,20 @@ Respond with JSON format:
     if (typeof input === 'string') {
       return 'txt';
     }
-    
+
     if (Buffer.isBuffer(input)) {
       // Simple magic number detection
       const header = input.slice(0, 8);
-      
+
       if (header.includes(Buffer.from('PDF'))) {
         return 'pdf';
       }
-      
+
       if (header.includes(Buffer.from('PK'))) {
         return 'docx';
       }
     }
-    
+
     return 'txt';
   }
 
@@ -685,15 +786,24 @@ Respond with JSON format:
    */
   _updatePerformanceMetrics(startTime, success) {
     const processingTime = Date.now() - startTime;
-    
+
     this.performanceMetrics.totalAnalyses++;
     this.performanceMetrics.totalProcessingTime += processingTime;
-    this.performanceMetrics.averageProcessingTime = 
+    this.performanceMetrics.averageProcessingTime =
       this.performanceMetrics.totalProcessingTime / this.performanceMetrics.totalAnalyses;
-    
+
     if (success) {
       this.performanceMetrics.successfulAnalyses++;
     }
+
+    // Log performance metrics for comprehensive tracking
+    logger.logger.info('Performance metrics updated', {
+      processingTime,
+      success,
+      totalAnalyses: this.performanceMetrics.totalAnalyses,
+      successfulAnalyses: this.performanceMetrics.successfulAnalyses,
+      averageProcessingTime: this.performanceMetrics.averageProcessingTime
+    });
   }
 }
 

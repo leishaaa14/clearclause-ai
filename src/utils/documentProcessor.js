@@ -1,9 +1,9 @@
 /**
  * Document Processing Service
- * Orchestrates the document analysis workflow using backend API
+ * Orchestrates the document analysis workflow using AI-powered contract analysis
  */
 
-// No AWS imports needed - we use the backend API for everything
+import { ContractProcessor } from '../processors/ContractProcessor.js';
 
 /**
  * Process a single document through the complete analysis pipeline
@@ -17,37 +17,34 @@ export async function processDocument(file, options = {}) {
   }
 
   try {
-    // For now, convert file to text and process via backend API
+    // Initialize the AI-powered contract processor
+    const contractProcessor = new ContractProcessor()
+
+    // Stage 1: Extract text from file
     results.stage = 'textract'
     results.progress = 10
-    
+
     // Read file content as text
     const fileText = await readFileAsText(file)
     results.progress = 50
 
-    // Stage 2: Analyze with backend API
+    // Stage 2: Analyze with AI system
     results.stage = 'bedrock'
-    
-    const response = await fetch('/api/process', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        action: 'analyze',
-        documentText: fileText,
-        documentType: file.type
-      })
-    })
 
-    if (!response.ok) {
-      throw new Error(`Backend API error: ${response.status}`)
+    // Create document object for AI processing
+    const document = {
+      text: fileText,
+      content: fileText,
+      filename: file.name,
+      type: file.type,
+      size: file.size
     }
 
-    const analysisResult = await response.json()
+    // Process with AI-powered contract analysis
+    const analysisResult = await contractProcessor.processContract(document, options)
     results.progress = 90
 
-    // Stage 3: Format results
+    // Stage 3: Format results for UI compatibility
     results.data = {
       document: {
         name: file.name,
@@ -57,19 +54,24 @@ export async function processDocument(file, options = {}) {
       },
       extraction: {
         text: fileText,
-        confidence: 95,
-        method: 'file-reader'
+        confidence: analysisResult.metadata.confidence * 100,
+        method: analysisResult.metadata.processingMethod
       },
-      analysis: analysisResult.analysis,
+      analysis: analysisResult,
       metadata: {
-        processedAt: analysisResult.processedAt || new Date().toISOString(),
-        model: analysisResult.model,
-        confidence: analysisResult.confidence || 95
+        processedAt: new Date().toISOString(),
+        model: analysisResult.metadata.modelUsed,
+        confidence: analysisResult.metadata.confidence * 100,
+        processingMethod: analysisResult.metadata.processingMethod,
+        processingTime: analysisResult.metadata.processingTime
       }
     }
 
     results.stage = 'complete'
     results.progress = 100
+
+    // Cleanup resources
+    await contractProcessor.cleanup()
 
     return results
 
@@ -109,10 +111,10 @@ export async function processImageDocument(file, options = {}) {
     // In a full implementation, this would use OCR services
     results.stage = 'textract'
     results.progress = 30
-    
+
     // Simulate OCR processing
     const placeholderText = `[Image Document: ${file.name}]\n\nThis is a placeholder for OCR-extracted text from the uploaded image. In a production environment, this would contain the actual text extracted from the image using OCR technology.`
-    
+
     results.stage = 'bedrock'
     results.progress = 60
 
@@ -182,30 +184,27 @@ export async function processTextInput(text, options = {}) {
   }
 
   try {
-    // Use local backend API instead of direct AWS calls
+    // Initialize the AI-powered contract processor
+    const contractProcessor = new ContractProcessor()
+
+    // Stage 1: Direct text processing
     results.stage = 'bedrock'
     results.progress = 30
-    
-    console.log('processTextInput: Sending request to backend with text:', text.substring(0, 100) + '...')
-    
-    const response = await fetch('/api/process', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        action: 'analyze',
-        documentText: text,
-        documentType: 'text'
-      })
-    })
 
-    if (!response.ok) {
-      throw new Error(`Backend API error: ${response.status}`)
+    console.log('processTextInput: Processing text with AI system:', text.substring(0, 100) + '...')
+
+    // Create document object for AI processing
+    const document = {
+      text: text,
+      content: text,
+      filename: 'Text Input',
+      type: 'text/plain',
+      size: text.length
     }
 
-    const analysisResult = await response.json()
-    console.log('processTextInput: Received response from backend:', analysisResult)
+    // Process with AI-powered contract analysis
+    const analysisResult = await contractProcessor.processContract(document, options)
+    console.log('processTextInput: Received AI analysis result:', analysisResult)
     results.progress = 90
 
     // Format results to match expected structure
@@ -218,19 +217,24 @@ export async function processTextInput(text, options = {}) {
       },
       extraction: {
         text: text,
-        confidence: 100,
-        method: 'direct-input'
+        confidence: analysisResult.metadata.confidence * 100,
+        method: analysisResult.metadata.processingMethod
       },
-      analysis: analysisResult.analysis,
+      analysis: analysisResult,
       metadata: {
-        processedAt: analysisResult.processedAt || new Date().toISOString(),
-        model: analysisResult.model,
-        confidence: analysisResult.confidence || 95
+        processedAt: new Date().toISOString(),
+        model: analysisResult.metadata.modelUsed,
+        confidence: analysisResult.metadata.confidence * 100,
+        processingMethod: analysisResult.metadata.processingMethod,
+        processingTime: analysisResult.metadata.processingTime
       }
     }
 
     results.stage = 'complete'
     results.progress = 100
+
+    // Cleanup resources
+    await contractProcessor.cleanup()
 
     return results
 
@@ -258,9 +262,9 @@ export async function processURLContent(url, options = {}) {
     // In a full implementation, this would fetch and analyze URL content
     results.stage = 'textract'
     results.progress = 30
-    
+
     const placeholderText = `[URL Content: ${url}]\n\nThis is a placeholder for content fetched from the provided URL. In a production environment, this would contain the actual text content extracted from the webpage.`
-    
+
     results.stage = 'bedrock'
     results.progress = 60
 
@@ -334,11 +338,11 @@ export async function compareDocuments(documents, options = {}) {
     // Stage 1: Process each document to extract text
     results.stage = 'textract'
     const processedDocs = []
-    
+
     for (let i = 0; i < documents.length; i++) {
       const doc = documents[i]
       results.progress = 10 + (i / documents.length) * 40
-      
+
       if (doc instanceof File) {
         // Read file content as text
         const fileText = await readFileAsText(doc)
@@ -359,7 +363,7 @@ export async function compareDocuments(documents, options = {}) {
 
     // Stage 2: Compare documents with backend API
     results.stage = 'bedrock'
-    
+
     const response = await fetch('/api/process', {
       method: 'POST',
       headers: {
@@ -412,37 +416,50 @@ export function transformAnalysisForUI(analysisData) {
   console.log('transformAnalysisForUI: Input data:', analysisData)
   const { analysis, extraction, document, metadata } = analysisData
 
+  // Handle both old format (analysis nested) and new format (analysis is the root)
+  const analysisResult = analysis.summary ? analysis : analysis
+
   const result = {
     summary: {
-      title: analysis.summary?.documentType || 'Legal Document Analysis',
-      totalClauses: analysis.clauses?.length || 0,
-      riskScore: calculateRiskScore(analysis.risks || []),
+      title: analysisResult.summary?.title || analysisResult.summary?.documentType || 'AI Contract Analysis',
+      totalClauses: analysisResult.clauses?.length || 0,
+      riskScore: analysisResult.summary?.riskScore || calculateRiskScore(analysisResult.risks || []),
       keyFindings: [
-        analysis.summary?.keyPurpose || 'Document analysis completed',
-        `Processed with ${metadata.confidence}% confidence`,
-        `${analysis.clauses?.length || 0} clauses identified`,
-        `${analysis.risks?.length || 0} risks detected`
+        analysisResult.summary?.title || 'AI-powered contract analysis completed',
+        `Processed with ${Math.round(metadata.confidence || 95)}% confidence using ${metadata.processingMethod || 'AI model'}`,
+        `${analysisResult.clauses?.length || 0} clauses identified and categorized`,
+        `${analysisResult.risks?.length || 0} risks detected and assessed`,
+        `Processing time: ${metadata.processingTime || 0}ms`
       ]
     },
-    clauses: (analysis.clauses || []).map(clause => ({
+    clauses: (analysisResult.clauses || []).map(clause => ({
       id: clause.id,
-      title: clause.title,
-      text: clause.content, // UI expects 'text' not 'content'
-      riskLevel: clause.riskLevel,
-      explanation: clause.explanation
+      title: clause.category || clause.type || 'Contract Clause',
+      text: clause.text || clause.content,
+      type: clause.type,
+      category: clause.category,
+      confidence: clause.confidence,
+      riskLevel: determineClauseRiskLevel(clause, analysisResult.risks || []),
+      explanation: generateClauseExplanation(clause)
     })),
-    risks: calculateRiskCounts(analysis.risks || []),
+    risks: calculateRiskCounts(analysisResult.risks || []),
     metadata: {
       ...metadata,
       document: document,
       extraction: {
-        method: extraction.method,
-        confidence: extraction.confidence,
-        textLength: extraction.text.length
+        method: extraction?.method || metadata.processingMethod,
+        confidence: extraction?.confidence || metadata.confidence,
+        textLength: extraction?.text?.length || document?.size || 0
+      },
+      aiAnalysis: {
+        modelUsed: metadata.model || metadata.modelUsed,
+        processingMethod: metadata.processingMethod,
+        processingTime: metadata.processingTime,
+        confidence: metadata.confidence
       }
     }
   }
-  
+
   console.log('transformAnalysisForUI: Output result:', result)
   return result
 }
@@ -452,26 +469,28 @@ export function transformAnalysisForUI(analysisData) {
  */
 function calculateRiskScore(risks) {
   if (!risks || risks.length === 0) return 0
-  
+
   const severityWeights = { critical: 10, high: 7, medium: 4, low: 1 }
   const totalScore = risks.reduce((sum, risk) => {
-    return sum + (severityWeights[risk.severity] || 1)
+    const severity = risk.severity?.toLowerCase() || 'low'
+    return sum + (severityWeights[severity] || 1)
   }, 0)
-  
+
   return Math.round((totalScore / risks.length) * 10) / 10
 }
 
 function calculateRiskCounts(risks) {
   if (!risks || risks.length === 0) return []
-  
+
   const counts = risks.reduce((acc, risk) => {
-    acc[risk.severity] = (acc[risk.severity] || 0) + 1
+    const severity = risk.severity?.toLowerCase() || 'low'
+    acc[severity] = (acc[severity] || 0) + 1
     return acc
   }, {})
 
   const colors = {
     critical: '#dc2626',
-    high: '#ef4444', 
+    high: '#ef4444',
     medium: '#f59e0b',
     low: '#10b981'
   }
@@ -481,6 +500,47 @@ function calculateRiskCounts(risks) {
     count,
     color: colors[level] || '#6b7280'
   }))
+}
+
+function determineClauseRiskLevel(clause, risks) {
+  // Find risks that affect this clause
+  const relatedRisks = risks.filter(risk =>
+    risk.affectedClauses && risk.affectedClauses.includes(clause.id)
+  )
+
+  if (relatedRisks.length === 0) return 'low'
+
+  // Return the highest risk level
+  const riskLevels = { low: 1, medium: 2, high: 3, critical: 4 }
+  const maxRisk = relatedRisks.reduce((max, risk) => {
+    const level = risk.severity?.toLowerCase() || 'low'
+    return riskLevels[level] > riskLevels[max] ? level : max
+  }, 'low')
+
+  return maxRisk
+}
+
+function generateClauseExplanation(clause) {
+  // Generate a simple explanation based on clause type
+  const explanations = {
+    payment_terms: 'This clause defines when and how payments should be made.',
+    termination_clause: 'This clause specifies conditions under which the contract can be ended.',
+    liability_limitation: 'This clause limits the liability of one or both parties.',
+    confidentiality_agreement: 'This clause requires parties to keep certain information confidential.',
+    intellectual_property: 'This clause addresses ownership and use of intellectual property.',
+    force_majeure: 'This clause addresses unforeseeable circumstances that prevent contract fulfillment.',
+    governing_law: 'This clause specifies which jurisdiction\'s laws govern the contract.',
+    dispute_resolution: 'This clause outlines how disputes will be resolved.',
+    warranties_representations: 'This clause contains promises or guarantees made by the parties.',
+    indemnification: 'This clause requires one party to protect the other from certain losses.',
+    assignment_rights: 'This clause addresses whether contract rights can be transferred.',
+    amendment_modification: 'This clause specifies how the contract can be changed.',
+    severability_clause: 'This clause ensures the contract remains valid even if parts are unenforceable.',
+    entire_agreement: 'This clause states that the contract represents the complete agreement.',
+    notice_provisions: 'This clause specifies how official communications should be made.'
+  }
+
+  return explanations[clause.type] || 'This is a contract clause that requires review.'
 }
 
 function generateSimplifiedText(content) {
