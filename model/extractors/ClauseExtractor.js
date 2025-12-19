@@ -1,6 +1,22 @@
 // Clause Extraction System
 // Handles identification, categorization, and grouping of contract clauses
 
+import { ModelConfig } from '../config/ModelConfig.js';
+import winston from 'winston';
+
+// Configure logger for clause extraction
+const logger = winston.createLogger({
+  level: 'info',
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.json()
+  ),
+  transports: [
+    new winston.transports.Console(),
+    new winston.transports.File({ filename: 'clause-extractor.log' })
+  ]
+});
+
 export class ClauseExtractor {
   constructor(modelManager = null) {
     this.modelManager = modelManager;
@@ -21,39 +37,184 @@ export class ClauseExtractor {
       'entire_agreement',
       'notice_provisions'
     ];
+    
+    // Performance tracking
+    this.extractionMetrics = {
+      totalExtractions: 0,
+      averageClausesPerDocument: 0,
+      averageConfidence: 0,
+      processingTime: 0
+    };
   }
 
   /**
-   * Identify clauses in contract text
+   * Identify clauses in contract text using AI-powered analysis
    * @param {string} text - Contract text to analyze
    * @returns {Promise<Array>} - Array of identified clauses
    */
   async identifyClauses(text) {
-    // Check if text is a string first
     if (typeof text !== 'string') {
       throw new Error('Valid text string is required for clause identification');
     }
 
-    // Handle empty or whitespace-only text (return empty array, don't throw)
-    if (!text || text.trim().length === 0) {
+    // Handle empty or very short text
+    if (text.trim().length === 0) {
       return [];
     }
 
-    // Use AI model if available, otherwise fall back to rule-based approach
-    if (this.modelManager && this.modelManager.isLoaded) {
-      try {
-        return await this._identifyClausesWithAI(text);
-      } catch (error) {
-        console.warn('AI clause identification failed, falling back to rule-based approach:', error.message);
-        return await this._identifyClausesRuleBased(text);
+    const startTime = Date.now();
+    
+    try {
+      logger.info('Starting clause identification', {
+        textLength: text.length,
+        modelAvailable: !!this.modelManager
+      });
+
+      let clauses = [];
+
+      if (this.modelManager && this.modelManager.isLoaded) {
+        // Use AI model for advanced clause identification
+        clauses = await this.identifyClausesWithAI(text);
+      } else {
+        // Fallback to pattern-based identification
+        logger.warn('AI model not available, using fallback clause identification');
+        clauses = await this.identifyClausesWithPatterns(text);
       }
-    } else {
-      return await this._identifyClausesRuleBased(text);
+
+      const processingTime = Date.now() - startTime;
+      this.updateMetrics(clauses, processingTime);
+
+      logger.info('Clause identification completed', {
+        clausesFound: clauses.length,
+        processingTime,
+        averageClauseLength: clauses.reduce((sum, c) => sum + c.text.length, 0) / clauses.length
+      });
+
+      return clauses;
+    } catch (error) {
+      logger.error('Clause identification failed', {
+        error: error.message,
+        textLength: text.length,
+        processingTime: Date.now() - startTime
+      });
+      throw new Error(`Clause identification failed: ${error.message}`);
     }
   }
 
   /**
-   * Categorize clauses into predefined types
+   * Identify clauses using AI model inference
+   * @param {string} text - Contract text
+   * @returns {Promise<Array>} - Array of identified clauses
+   * @private
+   */
+  async identifyClausesWithAI(text) {
+    const prompt = `
+You are a legal AI assistant specialized in contract analysis. Identify individual clauses in the following contract text.
+
+Contract Text:
+${text}
+
+Instructions:
+1. Identify distinct legal clauses (not just sentences)
+2. Each clause should represent a complete legal concept or obligation
+3. Provide the exact text of each clause
+4. Include position information for each clause
+5. Assign a unique ID to each clause
+
+Return your response in the following JSON format:
+{
+  "clauses": [
+    {
+      "id": "clause_1",
+      "text": "exact clause text from the contract",
+      "startPosition": 0,
+      "endPosition": 100
+    }
+  ]
+}
+
+Only return valid JSON, no additional text.`;
+
+    try {
+      const response = await this.modelManager.inference(prompt, {
+        temperature: 0.1,
+        maxTokens: 4000
+      });
+
+      const parsed = JSON.parse(response);
+      
+      if (!parsed.clauses || !Array.isArray(parsed.clauses)) {
+        throw new Error('Invalid AI response format');
+      }
+
+      return parsed.clauses.map((clause, index) => {
+        const startPos = clause.startPosition !== undefined ? clause.startPosition : text.indexOf(clause.text);
+        const validStartPos = startPos >= 0 ? startPos : 0;
+        
+        return {
+          id: clause.id || `ai_clause_${index}`,
+          text: clause.text,
+          startPosition: validStartPos,
+          endPosition: clause.endPosition !== undefined ? clause.endPosition : (validStartPos + clause.text.length)
+        };
+      });
+    } catch (error) {
+      logger.warn('AI clause identification failed, falling back to patterns', {
+        error: error.message
+      });
+      return await this.identifyClausesWithPatterns(text);
+    }
+  }
+
+  /**
+   * Identify clauses using pattern-based analysis (fallback)
+   * @param {string} text - Contract text
+   * @returns {Promise<Array>} - Array of identified clauses
+   * @private
+   */
+  async identifyClausesWithPatterns(text) {
+    const clauses = [];
+    
+    // Split by common clause separators
+    const clausePatterns = [
+      /\n\s*\d+\.\s+/g,  // Numbered clauses (1. 2. etc.)
+      /\n\s*\([a-z]\)\s+/g,  // Lettered subclauses (a) b) etc.)
+      /\n\s*[A-Z][A-Z\s]+:\s*/g,  // Section headers (PAYMENT TERMS:)
+      /\.\s+(?=[A-Z])/g  // Sentence boundaries followed by capital letters
+    ];
+
+    let segments = [text];
+    
+    // Apply each pattern to split the text
+    clausePatterns.forEach(pattern => {
+      const newSegments = [];
+      segments.forEach(segment => {
+        const parts = segment.split(pattern);
+        newSegments.push(...parts);
+      });
+      segments = newSegments;
+    });
+
+    // Filter and process segments into clauses
+    segments.forEach((segment, index) => {
+      const trimmed = segment.trim();
+      if (trimmed.length > 30) { // Only consider substantial clauses
+        const startPos = text.indexOf(trimmed);
+        const validStartPos = startPos >= 0 ? startPos : 0;
+        clauses.push({
+          id: `pattern_clause_${index}`,
+          text: trimmed,
+          startPosition: validStartPos,
+          endPosition: validStartPos + trimmed.length
+        });
+      }
+    });
+
+    return clauses;
+  }
+
+  /**
+   * Categorize clauses into predefined types using AI analysis
    * @param {Array} clauses - Array of clause objects
    * @returns {Promise<Array>} - Array of categorized clauses
    */
@@ -62,21 +223,129 @@ export class ClauseExtractor {
       throw new Error('Clauses must be an array');
     }
 
+    logger.info('Starting clause categorization', {
+      clauseCount: clauses.length,
+      supportedTypes: this.supportedClauseTypes.length
+    });
+
     const categorizedClauses = [];
 
     for (const clause of clauses) {
-      const category = await this.determineClauseType(clause.text);
-      const confidence = await this.calculateConfidence(clause, category);
+      try {
+        let category, confidence;
+        
+        if (this.modelManager && this.modelManager.isLoaded) {
+          // Use AI model for categorization
+          const result = await this.categorizeClauseWithAI(clause);
+          category = result.category;
+          confidence = result.confidence;
+        } else {
+          // Fallback to keyword-based categorization
+          category = await this.determineClauseType(clause.text);
+          confidence = await this.calculateConfidence(clause, category);
+        }
+        
+        categorizedClauses.push({
+          ...clause,
+          type: category,
+          category: category,
+          confidence: confidence
+        });
 
-      categorizedClauses.push({
-        ...clause,
-        type: category,
-        category: category,
-        confidence: confidence
-      });
+        logger.debug('Clause categorized', {
+          clauseId: clause.id,
+          category,
+          confidence,
+          textLength: clause.text.length
+        });
+      } catch (error) {
+        logger.error('Failed to categorize clause', {
+          clauseId: clause.id,
+          error: error.message
+        });
+        
+        // Add clause with unknown category on error
+        categorizedClauses.push({
+          ...clause,
+          type: 'unknown',
+          category: 'unknown',
+          confidence: 0
+        });
+      }
     }
 
+    logger.info('Clause categorization completed', {
+      totalClauses: categorizedClauses.length,
+      averageConfidence: categorizedClauses.reduce((sum, c) => sum + c.confidence, 0) / categorizedClauses.length
+    });
+
     return categorizedClauses;
+  }
+
+  /**
+   * Categorize a single clause using AI model
+   * @param {Object} clause - Clause object
+   * @returns {Promise<Object>} - Category and confidence
+   * @private
+   */
+  async categorizeClauseWithAI(clause) {
+    const prompt = `
+You are a legal AI assistant specialized in contract clause categorization. Categorize the following clause into one of the predefined types.
+
+Clause Text:
+"${clause.text}"
+
+Supported Clause Types:
+${this.supportedClauseTypes.join(', ')}
+
+Instructions:
+1. Analyze the clause content and legal meaning
+2. Select the most appropriate category from the supported types
+3. Assign a confidence score (0.0-1.0) based on how certain you are
+4. If the clause doesn't fit any category well, use "unknown"
+
+Return your response in the following JSON format:
+{
+  "category": "selected_category",
+  "confidence": 0.95,
+  "reasoning": "Brief explanation of why this category was chosen"
+}
+
+Only return valid JSON, no additional text.`;
+
+    try {
+      const response = await this.modelManager.inference(prompt, {
+        temperature: 0.1,
+        maxTokens: 200
+      });
+
+      const parsed = JSON.parse(response);
+      
+      if (!parsed.category) {
+        throw new Error('Invalid AI categorization response');
+      }
+
+      // Validate category is supported
+      const category = this.supportedClauseTypes.includes(parsed.category) 
+        ? parsed.category 
+        : 'unknown';
+
+      return {
+        category,
+        confidence: Math.min(Math.max(parsed.confidence || 0, 0), 1)
+      };
+    } catch (error) {
+      logger.warn('AI categorization failed, using fallback', {
+        clauseId: clause.id,
+        error: error.message
+      });
+      
+      // Fallback to keyword-based categorization
+      const category = await this.determineClauseType(clause.text);
+      const confidence = await this.calculateConfidence(clause, category);
+      
+      return { category, confidence };
+    }
   }
 
   /**
@@ -103,7 +372,7 @@ export class ClauseExtractor {
     // Group clauses by type
     categorizedClauses.forEach(clause => {
       const type = clause.type || 'unknown';
-
+      
       if (!grouped[type]) {
         grouped[type] = {
           type: type,
@@ -120,7 +389,7 @@ export class ClauseExtractor {
         startPosition: clause.startPosition,
         endPosition: clause.endPosition
       });
-
+      
       grouped[type].count = grouped[type].clauses.length;
     });
 
@@ -138,107 +407,90 @@ export class ClauseExtractor {
       return 0;
     }
 
-    // Enhanced confidence calculation based on keyword matching
+    // Simple confidence calculation based on keyword matching
+    // In a real implementation, this would use AI model confidence scores
     const keywords = this.getKeywordsForCategory(category);
     const text = clause.text.toLowerCase();
-
+    
+    if (keywords.length === 0) {
+      return 0.5; // Default confidence for unknown categories
+    }
+    
     let matchCount = 0;
-    let strongMatchCount = 0;
-
     keywords.forEach(keyword => {
-      const keywordLower = keyword.toLowerCase();
-      if (text.includes(keywordLower)) {
+      if (text.includes(keyword.toLowerCase())) {
         matchCount++;
-
-        // Check for strong matches (keyword appears multiple times or is prominent)
-        const occurrences = (text.match(new RegExp(keywordLower, 'g')) || []).length;
-        if (occurrences > 1) {
-          strongMatchCount++;
-        }
       }
     });
 
-    // Base confidence from keyword matches
-    let confidence = 0;
-
-    if (matchCount > 0) {
-      // At least one keyword match gives minimum 0.6 confidence
-      confidence = 0.6 + (matchCount / keywords.length) * 0.3;
-
-      // Strong matches boost confidence
-      if (strongMatchCount > 0) {
-        confidence += 0.1;
-      }
-    } else if (category === 'unknown') {
-      // Unknown category gets low confidence
-      confidence = 0.3;
-    }
-
-    // Ensure confidence is between 0 and 1
-    confidence = Math.min(Math.max(confidence, 0), 1.0);
-
-    return Math.round(confidence * 100) / 100; // Round to 2 decimal places
+    const confidence = Math.min(matchCount / keywords.length, 1.0);
+    const result = Math.round(confidence * 100) / 100; // Round to 2 decimal places
+    
+    // Ensure we never return NaN
+    return isNaN(result) ? 0 : result;
   }
 
   /**
-   * Extract clauses from contract text (main entry point)
-   * @param {string} text - Contract text to analyze
-   * @returns {Promise<Object>} - Extraction results with clauses and summary
-   */
-  async extractClauses(text) {
-    if (!text || typeof text !== 'string' || text.trim().length === 0) {
-      throw new Error('Valid text string is required for clause extraction');
-    }
-
-    try {
-      // Step 1: Identify clauses in the text
-      const identifiedClauses = await this.identifyClauses(text);
-
-      // Step 2: Categorize the identified clauses
-      const categorizedClauses = await this.categorizeClauses(identifiedClauses);
-
-      // Step 3: Group clauses by type
-      const groupedClauses = this.groupClausesByType(categorizedClauses);
-
-      // Step 4: Generate summary
-      const summary = this.generateClauseSummary(categorizedClauses, groupedClauses);
-
-      return {
-        clauses: categorizedClauses,
-        grouped: groupedClauses,
-        summary: summary
-      };
-    } catch (error) {
-      throw new Error(`Clause extraction failed: ${error.message}`);
-    }
-  }
-
-  /**
-   * Generate clause summary with counts and statistics
+   * Generate clause type summary counts
    * @param {Array} categorizedClauses - Array of categorized clauses
-   * @param {Object} groupedClauses - Grouped clauses by type
-   * @returns {Object} - Summary statistics
+   * @returns {Object} - Summary with total counts and type breakdown
    */
-  generateClauseSummary(categorizedClauses, groupedClauses) {
-    const clauseTypes = {};
+  generateClauseSummary(categorizedClauses) {
+    if (!Array.isArray(categorizedClauses)) {
+      throw new Error('Categorized clauses must be an array');
+    }
 
-    // Count clauses by type
+    const summary = {
+      totalClauses: categorizedClauses.length,
+      clauseTypeCounts: {},
+      averageConfidence: 0,
+      highConfidenceClauses: 0,
+      unknownClauses: 0
+    };
+
+    // Initialize counts for all supported types
+    this.supportedClauseTypes.forEach(type => {
+      summary.clauseTypeCounts[type] = 0;
+    });
+
+    // Count clauses by type and calculate metrics
+    let totalConfidence = 0;
+    let highConfidenceCount = 0;
+
     categorizedClauses.forEach(clause => {
       const type = clause.type || 'unknown';
-      clauseTypes[type] = (clauseTypes[type] || 0) + 1;
+      
+      if (summary.clauseTypeCounts.hasOwnProperty(type)) {
+        summary.clauseTypeCounts[type]++;
+      } else {
+        summary.clauseTypeCounts[type] = 1;
+      }
+
+      if (type === 'unknown') {
+        summary.unknownClauses++;
+      }
+
+      totalConfidence += clause.confidence || 0;
+      
+      if (clause.confidence >= 0.8) {
+        highConfidenceCount++;
+      }
     });
 
-    // Calculate average confidence
-    const totalConfidence = categorizedClauses.reduce((sum, clause) => sum + (clause.confidence || 0), 0);
-    const averageConfidence = categorizedClauses.length > 0 ? totalConfidence / categorizedClauses.length : 0;
+    summary.averageConfidence = categorizedClauses.length > 0 
+      ? Math.round((totalConfidence / categorizedClauses.length) * 100) / 100 
+      : 0;
+    
+    summary.highConfidenceClauses = highConfidenceCount;
 
-    return {
-      totalClauses: categorizedClauses.length,
-      clauseTypes: clauseTypes,
-      averageConfidence: Math.round(averageConfidence * 100) / 100,
-      supportedTypes: this.supportedClauseTypes.length,
-      identifiedTypes: Object.keys(clauseTypes).length
-    };
+    logger.info('Clause summary generated', {
+      totalClauses: summary.totalClauses,
+      averageConfidence: summary.averageConfidence,
+      highConfidenceClauses: summary.highConfidenceClauses,
+      unknownClauses: summary.unknownClauses
+    });
+
+    return summary;
   }
 
   /**
@@ -250,200 +502,50 @@ export class ClauseExtractor {
   }
 
   /**
-   * Identify clauses using AI model
-   * @param {string} text - Contract text
-   * @returns {Promise<Array>} - Array of identified clauses
+   * Update extraction metrics
+   * @param {Array} clauses - Extracted clauses
+   * @param {number} processingTime - Processing time in milliseconds
    * @private
    */
-  async _identifyClausesWithAI(text) {
-    const prompt = this._buildClauseExtractionPrompt(text);
+  updateMetrics(clauses, processingTime) {
+    this.extractionMetrics.totalExtractions++;
+    
+    const currentAvg = this.extractionMetrics.averageClausesPerDocument;
+    this.extractionMetrics.averageClausesPerDocument = 
+      (currentAvg * (this.extractionMetrics.totalExtractions - 1) + clauses.length) / 
+      this.extractionMetrics.totalExtractions;
 
-    try {
-      const response = await this.modelManager.inference(prompt, {
-        temperature: 0.1,
-        maxTokens: 4000,
-        format: 'json'
-      });
+    this.extractionMetrics.processingTime = processingTime;
 
-      const parsedResponse = JSON.parse(response);
-
-      if (!parsedResponse.clauses || !Array.isArray(parsedResponse.clauses)) {
-        throw new Error('Invalid AI response format');
-      }
-
-      return parsedResponse.clauses.map((clause, index) => ({
-        id: clause.id || `clause_${index + 1}`,
-        text: clause.text || '',
-        startPosition: clause.startPosition || 0,
-        endPosition: clause.endPosition || clause.text?.length || 0
-      }));
-    } catch (error) {
-      throw new Error(`AI clause identification failed: ${error.message}`);
+    if (clauses.length > 0) {
+      const avgConfidence = clauses.reduce((sum, c) => sum + (c.confidence || 0), 0) / clauses.length;
+      const currentConfidenceAvg = this.extractionMetrics.averageConfidence;
+      this.extractionMetrics.averageConfidence = 
+        (currentConfidenceAvg * (this.extractionMetrics.totalExtractions - 1) + avgConfidence) / 
+        this.extractionMetrics.totalExtractions;
     }
   }
 
   /**
-   * Identify clauses using rule-based approach (fallback)
-   * @param {string} text - Contract text
-   * @returns {Promise<Array>} - Array of identified clauses
-   * @private
+   * Get extraction performance metrics
+   * @returns {Object} - Performance metrics
    */
-  async _identifyClausesRuleBased(text) {
-    const clauses = [];
-
-    // Enhanced clause identification with multiple strategies
-
-    // Strategy 1: Split by common clause separators and patterns
-    const sectionPatterns = [
-      /(?:\n\s*\d+\.)/g,
-      /(?:\n\s*[A-Z]\.)/g,
-      /(?:Section \d+)/gi,
-      /(?:Article \d+)/gi,
-      /(?:\n\s*\([a-z]\))/g,
-      /(?:\n\s*\d+\.\d+)/g
-    ];
-
-    let sections = [text];
-
-    // Apply each pattern to split the text
-    for (const pattern of sectionPatterns) {
-      const newSections = [];
-      for (const section of sections) {
-        newSections.push(...section.split(pattern));
-      }
-      sections = newSections;
-    }
-
-    // Process sections
-    sections.forEach((section, index) => {
-      const trimmed = section.trim();
-      if (trimmed.length > 30) { // Lowered threshold for better detection
-        const startPos = text.indexOf(trimmed);
-        clauses.push({
-          id: `clause_${index + 1}`,
-          text: trimmed,
-          startPosition: startPos >= 0 ? startPos : 0,
-          endPosition: startPos >= 0 ? startPos + trimmed.length : trimmed.length
-        });
-      }
-    });
-
-    // Strategy 2: If no clear sections found, use sentence-based splitting with keyword detection
-    if (clauses.length === 0) {
-      const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 0);
-
-      sentences.forEach((sentence, index) => {
-        const trimmed = sentence.trim();
-        if (trimmed.length > 15) { // Lowered threshold
-          const startPos = text.indexOf(trimmed);
-          clauses.push({
-            id: `clause_${index + 1}`,
-            text: trimmed,
-            startPosition: startPos >= 0 ? startPos : 0,
-            endPosition: startPos >= 0 ? startPos + trimmed.length : trimmed.length
-          });
-        }
-      });
-    }
-
-    // Strategy 3: If still no clauses, create clauses based on keyword presence
-    if (clauses.length === 0) {
-      const keywordPatterns = [
-        /payment[^.]*\./gi,
-        /termination[^.]*\./gi,
-        /liability[^.]*\./gi,
-        /confidential[^.]*\./gi,
-        /intellectual property[^.]*\./gi,
-        /indemnif[^.]*\./gi
-      ];
-
-      let clauseIndex = 1;
-      for (const pattern of keywordPatterns) {
-        const matches = text.match(pattern);
-        if (matches) {
-          matches.forEach(match => {
-            const startPos = text.indexOf(match);
-            clauses.push({
-              id: `clause_${clauseIndex++}`,
-              text: match.trim(),
-              startPosition: startPos >= 0 ? startPos : 0,
-              endPosition: startPos >= 0 ? startPos + match.length : match.length
-            });
-          });
-        }
-      }
-    }
-
-    // Strategy 4: Final fallback - create artificial clauses from paragraphs
-    if (clauses.length === 0 && text.trim().length > 0) {
-      const paragraphs = text.split(/\n\s*\n/).filter(p => p.trim().length > 0);
-
-      if (paragraphs.length > 0) {
-        paragraphs.forEach((paragraph, index) => {
-          const trimmed = paragraph.trim();
-          if (trimmed.length > 10) {
-            const startPos = text.indexOf(trimmed);
-            clauses.push({
-              id: `clause_${index + 1}`,
-              text: trimmed,
-              startPosition: startPos >= 0 ? startPos : 0,
-              endPosition: startPos >= 0 ? startPos + trimmed.length : trimmed.length
-            });
-          }
-        });
-      } else {
-        // Last resort: treat entire text as one clause
-        clauses.push({
-          id: 'clause_1',
-          text: text.trim(),
-          startPosition: 0,
-          endPosition: text.length
-        });
-      }
-    }
-
-    return clauses;
+  getMetrics() {
+    return { ...this.extractionMetrics };
   }
 
   /**
-   * Build clause extraction prompt for AI model
-   * @param {string} text - Contract text
-   * @returns {string} - Formatted prompt
-   * @private
+   * Reset extraction metrics
    */
-  _buildClauseExtractionPrompt(text) {
-    return `You are a legal AI assistant specialized in contract analysis. Extract and identify individual clauses from the following contract text.
-
-CONTRACT TEXT:
-${text}
-
-INSTRUCTIONS:
-1. Identify individual clauses in the contract
-2. Extract the full text of each clause
-3. Determine the start and end positions of each clause
-4. Assign unique IDs to each clause
-
-Return your response in the following JSON format:
-{
-  "clauses": [
-    {
-      "id": "clause_1",
-      "text": "full clause text",
-      "startPosition": 0,
-      "endPosition": 100
-    }
-  ]
-}
-
-Focus on identifying meaningful contract provisions, not just sentences. Look for:
-- Payment and billing terms
-- Termination conditions
-- Liability and indemnification clauses
-- Intellectual property provisions
-- Confidentiality agreements
-- Governing law and dispute resolution
-- Warranties and representations
-- Assignment and transfer rights`;
+  resetMetrics() {
+    this.extractionMetrics = {
+      totalExtractions: 0,
+      averageClausesPerDocument: 0,
+      averageConfidence: 0,
+      processingTime: 0
+    };
+    
+    logger.info('Extraction metrics reset');
   }
 
   /**
@@ -455,106 +557,57 @@ Focus on identifying meaningful contract provisions, not just sentences. Look fo
   async determineClauseType(text) {
     if (!text) return 'unknown';
 
-    // Use AI model if available for better categorization
-    if (this.modelManager && this.modelManager.isLoaded) {
-      try {
-        return await this._categorizeWithAI(text);
-      } catch (error) {
-        console.warn('AI categorization failed, using rule-based approach:', error.message);
-        return this._categorizeRuleBased(text);
-      }
-    } else {
-      return this._categorizeRuleBased(text);
-    }
-  }
-
-  /**
-   * Categorize clause using AI model
-   * @param {string} text - Clause text
-   * @returns {Promise<string>} - Clause type
-   * @private
-   */
-  async _categorizeWithAI(text) {
-    const prompt = `You are a legal AI assistant. Categorize the following contract clause into one of these types:
-
-CLAUSE TYPES: ${this.supportedClauseTypes.join(', ')}
-
-CLAUSE TEXT:
-${text}
-
-Respond with only the clause type from the list above. If the clause doesn't clearly fit any category, respond with "unknown".`;
-
-    try {
-      const response = await this.modelManager.inference(prompt, {
-        temperature: 0.1,
-        maxTokens: 50
-      });
-
-      const category = response.trim().toLowerCase();
-      return this.supportedClauseTypes.includes(category) ? category : 'unknown';
-    } catch (error) {
-      throw new Error(`AI categorization failed: ${error.message}`);
-    }
-  }
-
-  /**
-   * Categorize clause using rule-based approach
-   * @param {string} text - Clause text
-   * @returns {string} - Clause type
-   * @private
-   */
-  _categorizeRuleBased(text) {
     const lowerText = text.toLowerCase();
+    
+    // Simple keyword-based categorization
+    // In a real implementation, this would use AI model inference
+    if (lowerText.includes('payment') || lowerText.includes('pay') || lowerText.includes('invoice')) {
+      return 'payment_terms';
+    }
+    if (lowerText.includes('terminate') || lowerText.includes('termination') || lowerText.includes('end')) {
+      return 'termination_clause';
+    }
+    if (lowerText.includes('liability') || lowerText.includes('liable') || lowerText.includes('damages')) {
+      return 'liability_limitation';
+    }
+    if (lowerText.includes('confidential') || lowerText.includes('non-disclosure') || lowerText.includes('secret')) {
+      return 'confidentiality_agreement';
+    }
+    if (lowerText.includes('intellectual property') || lowerText.includes('copyright') || lowerText.includes('patent')) {
+      return 'intellectual_property';
+    }
+    if (lowerText.includes('force majeure') || lowerText.includes('act of god') || lowerText.includes('unforeseeable')) {
+      return 'force_majeure';
+    }
+    if (lowerText.includes('governing law') || lowerText.includes('jurisdiction') || lowerText.includes('applicable law')) {
+      return 'governing_law';
+    }
+    if (lowerText.includes('dispute') || lowerText.includes('arbitration') || lowerText.includes('mediation')) {
+      return 'dispute_resolution';
+    }
+    if (lowerText.includes('warrant') || lowerText.includes('represent') || lowerText.includes('guarantee')) {
+      return 'warranties_representations';
+    }
+    if (lowerText.includes('indemnif') || lowerText.includes('hold harmless') || lowerText.includes('defend')) {
+      return 'indemnification';
+    }
+    if (lowerText.includes('assign') || lowerText.includes('transfer') || lowerText.includes('delegate')) {
+      return 'assignment_rights';
+    }
+    if (lowerText.includes('amend') || lowerText.includes('modif') || lowerText.includes('change')) {
+      return 'amendment_modification';
+    }
+    if (lowerText.includes('severab') || lowerText.includes('invalid') || lowerText.includes('unenforceable')) {
+      return 'severability_clause';
+    }
+    if (lowerText.includes('entire agreement') || lowerText.includes('complete agreement') || lowerText.includes('supersede')) {
+      return 'entire_agreement';
+    }
+    if (lowerText.includes('notice') || lowerText.includes('notification') || lowerText.includes('inform')) {
+      return 'notice_provisions';
+    }
 
-    // Enhanced keyword-based categorization with scoring system
-    const categoryScores = {};
-
-    // Score each category based on keyword matches
-    const categories = {
-      'confidentiality_agreement': ['confidential', 'non-disclosure', 'secret', 'proprietary', 'confidentiality'],
-      'payment_terms': ['payment', 'pay', 'invoice', 'billing', 'fee', 'cost'],
-      'termination_clause': ['terminate', 'termination', 'end', 'expire', 'cancel'],
-      'liability_limitation': ['liability', 'liable', 'damages', 'loss', 'harm', 'limitation'],
-      'intellectual_property': ['intellectual property', 'copyright', 'patent', 'trademark', 'ip rights'],
-      'force_majeure': ['force majeure', 'act of god', 'unforeseeable', 'beyond control'],
-      'governing_law': ['governing law', 'jurisdiction', 'applicable law', 'courts'],
-      'dispute_resolution': ['dispute', 'arbitration', 'mediation', 'resolution'],
-      'warranties_representations': ['warrant', 'represent', 'guarantee', 'assure'],
-      'indemnification': ['indemnify', 'hold harmless', 'defend', 'protect'],
-      'assignment_rights': ['assign', 'transfer', 'delegate', 'convey'],
-      'amendment_modification': ['amend', 'modify', 'change', 'alter'],
-      'severability_clause': ['severable', 'invalid', 'unenforceable', 'separate'],
-      'entire_agreement': ['entire agreement', 'complete agreement', 'supersede', 'merge'],
-      'notice_provisions': ['notice', 'notification', 'inform', 'notify']
-    };
-
-    // Calculate scores for each category
-    Object.entries(categories).forEach(([category, keywords]) => {
-      let score = 0;
-      keywords.forEach(keyword => {
-        const keywordLower = keyword.toLowerCase();
-        if (lowerText.includes(keywordLower)) {
-          // Give higher score for exact matches and multiple occurrences
-          const occurrences = (lowerText.match(new RegExp(keywordLower, 'g')) || []).length;
-          score += occurrences * (keyword.length > 5 ? 2 : 1); // Longer keywords get higher weight
-        }
-      });
-      categoryScores[category] = score;
-    });
-
-    // Find the category with the highest score
-    let bestCategory = 'unknown';
-    let bestScore = 0;
-
-    Object.entries(categoryScores).forEach(([category, score]) => {
-      if (score > bestScore) {
-        bestScore = score;
-        bestCategory = category;
-      }
-    });
-
-    // Only return a category if we have a reasonable confidence (at least one keyword match)
-    return bestScore > 0 ? bestCategory : 'unknown';
+    return 'unknown';
   }
 
   /**
