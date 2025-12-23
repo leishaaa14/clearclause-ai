@@ -62,11 +62,12 @@ export default defineConfig({
         outDir: 'dist'
     },
     server: {
-        port: 3000
+        port: 3001
     },
     test: {
         globals: true,
         environment: 'jsdom',
-        setupFiles: ['./test-setup.js']
+        setupFiles: ['./test-setup.js'],
+        testTimeout: 30000 // 30 seconds for property-based tests
     }
 })

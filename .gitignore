@@ -34,3 +34,36 @@ coverage/
 # Temporary folders
 tmp/
 temp/
+
+# Large datasets and Kaggle data
+archive/
+data/
+datasets/
+CUAD_v1/
+*.pdf
+*.zip
+
+# Additional large file formats
+*.csv
+*.json
+*.xlsx
+*.xls
+
+# Temporary test files
+test-*.js
+debug-*.html
+demo-*.html
+*-test-*.js
+*-demo-*.js
+
+# Documentation and summary files
+*_SUMMARY.md
+*_GUIDE.md
+*_README.md
+task-*.md
+*-report.md
+
+# Model and training data
+model/
+scripts/
+test-results/

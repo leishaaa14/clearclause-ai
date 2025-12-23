@@ -1,0 +1,9 @@
+name: ClearClause End-to-End Testing
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run daily at 2 AM U

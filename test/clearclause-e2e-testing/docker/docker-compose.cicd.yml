@@ -1,0 +1,134 @@
+# Docker Compose configuration for ClearClause CI/CD testing
+# 
+# This configuration provides different environments for testing
+# with proper isolation and resource management.
+
+version: '3.8'
+
+services:
+  # CI Environment - Fast, lightweight testing
+  clearclause-ci:
+    build:
+      context: ../../..
+      dockerfile: test/clearclause-e2e-testing/docker/Dockerfile.cicd
+    container_name: clearclause-e2e-ci
+    environment:
+      - CI_ENVIRONMENT=ci
+      - CI_USE_REAL_SERVICES=false
+      - CI_NOTIFICATION_ENABLED=false
+      - CI_ARTIFACT_RETENTION=7
+    volumes:
+      - ../../../test-artifacts:/app/test-artifacts
+      - ../../../test-exports:/app/test-exports
+    networks:
+      - clearclause-test
+    mem_limit: 512m
+    cpus: 1.0
+    restart: "no"
+    command: ["node", "test/clearclause-e2e-testing/cicd-automation.js", "--environment", "ci"]
+
+  # Staging Environment - Full feature testing
+  clearclause-staging:
+    build:
+      context: ../../..
+      dockerfile: test/clearclause-e2e-testing/docker/Dockerfile.cicd
+    container_name: clearclause-e2e-staging
+    environment:
+      - CI_ENVIRONMENT=staging
+      - CI_USE_REAL_SERVICES=true
+      - CI_NOTIFICATION_ENABLED=true
+      - CI_ARTIFACT_RETENTION=30
+      - VITE_AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - VITE_AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - VITE_AWS_REGION=${AWS_REGION:-us-east-1}
+      - VITE_S3_BUCKET=${S3_BUCKET:-impactxaws-docs}
+      - VITE_TEXTRACT_LAMBDA=${TEXTRACT_LAMBDA:-ClearClause_TextractOCR}
+      - VITE_URL_LAMBDA=${URL_LAMBDA:-ClearClause_URLFetcher}
+      - VITE_BEDROCK_MODEL=${BEDROCK_MODEL:-anthropic.claude-3-sonnet-20240229-v1:0}
+    volumes:
+      - ../../../test-artifacts:/app/test-artifacts
+      - ../../../test-exports:/app/test-exports
+    networks:
+      - clearclause-test
+    mem_limit: 1g
+    cpus: 2.0
+    restart: "no"
+    command: ["node", "test/clearclause-e2e-testing/cicd-automation.js", "--environment", "staging", "--real-services", "--notify"]
+
+  # Production Environment - Production-like testing
+  clearclause-production:
+    build:
+      context: ../../..
+      dockerfile: test/clearclause-e2e-testing/docker/Dockerfile.cicd
+    container_name: clearclause-e2e-production
+    environment:
+      - CI_ENVIRONMENT=production
+      - CI_USE_REAL_SERVICES=true
+      - CI_NOTIFICATION_ENABLED=true
+      - CI_ARTIFACT_RETENTION=90
+      - VITE_AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - VITE_AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - VITE_AWS_REGION=${AWS_REGION:-us-east-1}
+      - VITE_S3_BUCKET=${S3_BUCKET:-impactxaws-docs}
+      - VITE_TEXTRACT_LAMBDA=${TEXTRACT_LAMBDA:-ClearClause_TextractOCR}
+      - VITE_URL_LAMBDA=${URL_LAMBDA:-ClearClause_URLFetcher}
+      - VITE_BEDROCK_MODEL=${BEDROCK_MODEL:-anthropic.claude-3-sonnet-20240229-v1:0}
+    volumes:
+      - ../../../test-artifacts:/app/test-artifacts
+      - ../../../test-exports:/app/test-exports
+    networks:
+      - clearclause-test
+    mem_limit: 2g
+    cpus: 4.0
+    restart: "no"
+    command: ["node", "test/clearclause-e2e-testing/cicd-automation.js", "--environment", "production", "--real-services", "--notify", "--retention", "90"]
+
+  # Test Scheduler - Automated test scheduling
+  clearclause-scheduler:
+    build:
+      context: ../../..
+      dockerfile: test/clearclause-e2e-testing/docker/Dockerfile.cicd
+    container_name: clearclause-e2e-scheduler
+    environment:
+      - CI_ENVIRONMENT=ci
+      - CI_USE_REAL_SERVICES=false
+      - CI_NOTIFICATION_ENABLED=true
+      - CI_ARTIFACT_RETENTION=30
+    volumes:
+      - ../../../test-artifacts:/app/test-artifacts
+      - ../../../test-exports:/app/test-exports
+    networks:
+      - clearclause-test
+    mem_limit: 256m
+    cpus: 0.5
+    restart: unless-stopped
+    command: ["node", "test/clearclause-e2e-testing/cicd-automation.js", "--schedule", "0 2 * * *", "--notify"]
+
+  # Artifact Manager - Cleanup and archival
+  clearclause-artifacts:
+    build:
+      context: ../../..
+      dockerfile: test/clearclause-e2e-testing/docker/Dockerfile.cicd
+    container_name: clearclause-e2e-artifacts
+    environment:
+      - CI_ARTIFACT_RETENTION=30
+    volumes:
+      - ../../../test-artifacts:/app/test-artifacts
+      - ../../../test-exports:/app/test-exports
+      - artifact-archive:/app/archive
+    networks:
+      - clearclause-test
+    mem_limit: 256m
+    cpus: 0.5
+    restart: "no"
+    command: ["node", "test/clearclause-e2e-testing/cicd-automation.js", "--cleanup", "--export", "/app/archive"]
+
+networks:
+  clearclause-test:
+    driver: bridge
+    name: clearclause-test-network
+
+volumes:
+  artifact-archive:
+    driver: local
+    name: clearclause-artifact-archive
