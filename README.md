@@ -1,50 +1,53 @@
-# 🚀 ClearClause AI - Enterprise Contract Analysis Platform
+# 🚀 ClearClause AI – Enterprise Contract Analysis Platform  
+**React · AWS · Gemini API · Tailwind CSS · Vite**
 
-[![React](https://img.shields.io/badge/React-18.2.0-blue.svg)](https://reactjs.org/)
-[![AWS](https://img.shields.io/badge/AWS-Bedrock%20%7C%20Textract-orange.svg)](https://aws.amazon.com/)
-[![Tailwind CSS](https://img.shields.io/badge/Tailwind-3.4.1-38B2AC.svg)](https://tailwindcss.com/)
-[![Vite](https://img.shields.io/badge/Vite-5.1.0-646CFF.svg)](https://vitejs.dev/)
+Transform legal document analysis with enterprise-grade AI technology. Get instant insights, risk assessments, and simplified explanations.
 
-> **Transform legal document analysis with enterprise-grade AI technology. Get instant insights, risk assessments, and simplified explanations.**
+---
 
 ## ✨ Features
 
-### 📄 **Multi-Document Analysis**
-- **Document Upload**: PDF, DOCX, TXT, and image files with drag-and-drop
-- **Text Input**: Direct text input with character/word count
-- **URL Processing**: Web scraping for online documents and terms of service
-- **Image OCR**: Extract text from scanned documents using AWS Textract
+### 📄 Multi-Document Analysis
+- **Document Upload**: PDF, DOCX, TXT, and image files with drag-and-drop  
+- **Text Input**: Direct text input with character/word count  
+- **URL Processing**: Web scraping for online documents and terms of service  
+- **Image OCR**: Extract text from scanned documents using AWS Textract  
 
-### ⚖️ **Document Comparison**
-- **Multi-Document Comparison**: Analyze 2-5 documents simultaneously
-- **Side-by-side Analysis**: Compare key terms, clauses, and risk levels
-- **Tabulated Results**: Professional comparison tables with risk indicators
-- **Key Differences**: Identify variations in termination, liability, payment terms
+### ⚖️ Document Comparison
+- **Multi-Document Comparison**: Analyze 2–5 documents simultaneously  
+- **Side-by-side Analysis**: Compare key terms, clauses, and risk levels  
+- **Tabulated Results**: Professional comparison tables with risk indicators  
+- **Key Differences**: Identify variations in termination, liability, and payment terms  
 
-### 🤖 **AI-Powered Analysis**
-- **AWS Bedrock Integration**: Enterprise-grade AI for contract analysis
-- **Local AI Support**: Ollama + Llama 3.1 8B Instruct for offline processing
-- **Clause Extraction**: Categorize and score contract clauses with confidence
-- **Risk Assessment**: Critical/High/Medium/Low risk levels with explanations
+### 🤖 AI-Powered Analysis
+- **Gemini API Integration**: Advanced contract understanding and reasoning  
+- **AWS Backend Pipeline**:
+  - **S3** for secure document storage  
+  - **Lambda** for serverless orchestration  
+  - **Textract** for OCR and structured text extraction  
+- **Clause Extraction**: Categorize and score contract clauses with confidence  
+- **Risk Assessment**: Critical / High / Medium / Low risk levels with explanations  
 
-### 📊 **Visual Analytics**
-- **Risk Distribution Charts**: Interactive pie charts and comparison metrics
-- **Progress Tracking**: Real-time analysis progress with confidence meters
-- **Professional UI**: Enterprise-grade interface with animations and themes
+### 📊 Visual Analytics
+- **Risk Distribution Charts**: Interactive pie charts and comparison metrics  
+- **Progress Tracking**: Real-time analysis progress with confidence meters  
+- **Professional UI**: Enterprise-grade interface with animations and themes  
 
 ## 🏗️ Architecture
 
 ```
 ClearClause AI/
-├── src/                    # React frontend application
-│   ├── components/         # Reusable UI components
-│   ├── utils/             # AWS services and document processing
-│   └── styles/            # Tailwind CSS and custom themes
-├── functions/             # Serverless backend functions
-├── api/                   # API clients and normalizers
-├── model/                 # Local AI model management
-├── test/                  # Comprehensive test suite
-└── .kiro/specs/          # Feature specifications and tasks
+├── src/ # React frontend application
+│ ├── components/ # Reusable UI components
+│ ├── utils/ # API helpers and document processing
+│ └── styles/ # Tailwind CSS and custom themes
+├── functions/ # AWS Lambda backend functions
+│ ├── uploadHandler/ # S3 upload logic
+│ ├── textractProcessor/ # OCR & text extraction
+│ └── geminiAnalyzer/ # Gemini API integration
+├── api/ # API clients and normalizers
+├── test/ # Comprehensive test suite
+└── .kiro/specs/ # Feature specifications and tasks
 ```
 
 ## 🚀 Quick Start
@@ -83,22 +86,17 @@ npm run dev
    ```
 
 2. **Enable AWS Services**:
-   - AWS Bedrock (Claude/Llama models)
+   - AWS S3
    - AWS Textract (document extraction)
    - AWS Lambda (serverless functions)
+  
+3. **Configure Gemini Credentials**:
+   ```bash
+   # GEMINI_API_KEY=your_gemini_api_key
+     GEMINI_MODEL=gemini-2.5-flash
+     GEMINI_MAX_TOKENS=4096
+   ```
 
-### Local AI Setup (Optional)
-
-```bash
-# Install Ollama
-curl -fsSL https://ollama.ai/install.sh | sh
-
-# Pull Llama 3.1 8B Instruct model
-ollama pull llama3.1:8b-instruct-q4_0
-
-# Run setup script
-npm run setup-ai
-```
 
 ## 📖 Usage
 
@@ -217,18 +215,15 @@ src/
 - Write property-based tests for new features
 - Update documentation for API changes
 - Ensure AWS integration tests pass
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+.
 
 ## 🙏 Acknowledgments
 
-- **AWS Bedrock** for enterprise AI capabilities
-- **Ollama** for local AI model hosting
-- **React** and **Tailwind CSS** for modern UI development
-- **Vite** for fast development and building
-- **CUAD Dataset** for contract analysis training data
+- **AWS S3, Lambda, Textract
+- **Google Gemini API
+- **React & Tailwind CSS
+- **Vite
+- **CUAD Dataset
 
 ## 📞 Support
 
