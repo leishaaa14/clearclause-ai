@@ -5,7 +5,9 @@
 
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
 import { TextractClient, DetectDocumentTextCommand } from '@aws-sdk/client-textract'
-import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime'
+import { GeminiClient } from './ai/GeminiClient.js'
+import { GeminiErrorHandler } from './ai/GeminiErrorHandler.js'
+import { GeminiResponseParser } from './ai/GeminiResponseParser.js'
 import dotenv from 'dotenv'
 
 // Load environment variables
@@ -22,21 +24,35 @@ const AWS_CONFIG = {
     retryMode: 'standard'
 }
 
-// Initialize AWS clients
+// Initialize AWS clients (S3 and Textract still needed)
 const s3Client = new S3Client(AWS_CONFIG)
 const textractClient = new TextractClient(AWS_CONFIG)
 
-function createBedrockClient() {
-    return new BedrockRuntimeClient(AWS_CONFIG);
+// Initialize Gemini client and utilities
+let geminiClient = null
+const geminiErrorHandler = new GeminiErrorHandler()
+const geminiResponseParser = new GeminiResponseParser()
+
+function createGeminiClient() {
+    if (!geminiClient) {
+        try {
+            geminiClient = new GeminiClient()
+        } catch (error) {
+            console.error('Failed to initialize Gemini client:', error.message)
+            geminiClient = null
+        }
+    }
+    return geminiClient
 }
 
 // Configuration constants
 const S3_BUCKET = process.env.VITE_S3_BUCKET
-const BEDROCK_MODEL = process.env.VITE_BEDROCK_MODEL
+const GEMINI_MODEL = process.env.VITE_GEMINI_MODEL || 'gemini-pro'
 
-console.log('🔧 Current Configuration:');
-console.log('- S3 Bucket:', S3_BUCKET);
-console.log('- Bedrock Model:', BEDROCK_MODEL);
+console.log('🔧 Current Configuration:')
+console.log('- S3 Bucket:', S3_BUCKET)
+console.log('- AI Model:', GEMINI_MODEL, '(Gemini)')
+
 
 /**
  * Main serverless function handler
@@ -88,7 +104,7 @@ async function handlePost(body, headers) {
                 services: {
                     s3: 'connected',
                     textract: 'connected', 
-                    bedrock: 'connected'
+                    gemini: 'connected'
                 }
             });
         }
@@ -173,23 +189,23 @@ async function processDocumentAnalysis(requestBody) {
             textToAnalyze = `[Excel Document Analysis: ${filename}]\n\n${textToAnalyze}\n\nNote: This Excel/CSV file contains structured data that has been processed for contract analysis.`;
         }
 
-        console.log('🚀 Starting Bedrock analysis...');
+        console.log('🚀 Starting Gemini analysis...');
         let analysisResult;
         let usingRealAI = false;
         let errorDetails = null;
         
         try {
-            analysisResult = await analyzeWithBedrock(textToAnalyze);
+            analysisResult = await analyzeWithGemini(textToAnalyze);
             if (analysisResult.success) {
                 usingRealAI = true;
                 console.log('✅ Real AI analysis completed successfully!');
             } else {
                 errorDetails = analysisResult.error;
-                console.log('❌ Bedrock analysis failed:', errorDetails);
+                console.log('❌ Gemini analysis failed:', errorDetails);
             }
         } catch (error) {
             errorDetails = error.message;
-            console.log('❌ Bedrock analysis threw exception:', errorDetails);
+            console.log('❌ Gemini analysis threw exception:', errorDetails);
         }
 
         // Fallback to mock data if real AI failed
@@ -208,13 +224,25 @@ async function processDocumentAnalysis(requestBody) {
             analysis: analysisResult.analysis,
             confidence: analysisResult.confidence,
             processedAt: new Date().toISOString(),
-            model: usingRealAI ? BEDROCK_MODEL : 'mock-analysis-enhanced',
+            model: usingRealAI ? GEMINI_MODEL : 'mock-analysis-enhanced',
             usingRealAI: usingRealAI,
             processingDetails: {
                 source: usingRealAI ? 'real-ai' : 'mock-fallback',
                 processingTime: Date.now() - (analysisResult.startTime || Date.now())
             }
         };
+
+        // DEBUG: Log the actual response being sent to frontend
+        console.log('📤 SENDING TO FRONTEND:');
+        console.log('- Analysis clauses count:', analysisResult.analysis?.clauses?.length || 0);
+        console.log('- Analysis risks count:', analysisResult.analysis?.risks?.length || 0);
+        console.log('- Response structure:', JSON.stringify({
+            analysis: {
+                summary: analysisResult.analysis?.summary,
+                clausesCount: analysisResult.analysis?.clauses?.length,
+                risksCount: analysisResult.analysis?.risks?.length
+            }
+        }, null, 2));
 
         // Include error details if AI failed
         if (errorDetails && !usingRealAI) {
@@ -230,87 +258,67 @@ async function processDocumentAnalysis(requestBody) {
 }
 
 /**
- * Analyze document with Bedrock
+ * Analyze document with Gemini
  */
-async function analyzeWithBedrock(documentText) {
+async function analyzeWithGemini(documentText) {
     const startTime = Date.now();
     
     try {
-        const bedrockClient = createBedrockClient();
-        const documentType = detectDocumentType(documentText);
-        const prompt = createAnalysisPrompt(documentText, documentType);
-        
-        let params;
-        
-        // Handle different model types
-        if (BEDROCK_MODEL.includes('anthropic.claude')) {
-            params = {
-                modelId: BEDROCK_MODEL,
-                contentType: 'application/json',
-                accept: 'application/json',
-                body: JSON.stringify({
-                    anthropic_version: 'bedrock-2023-05-31',
-                    max_tokens: 4000,
-                    messages: [{ role: 'user', content: prompt }]
-                })
-            };
-        } else if (BEDROCK_MODEL.includes('titan')) {
-            params = {
-                modelId: BEDROCK_MODEL,
-                contentType: 'application/json',
-                accept: 'application/json',
-                body: JSON.stringify({
-                    inputText: prompt,
-                    textGenerationConfig: {
-                        maxTokenCount: 3000,
-                        temperature: 0.2,
-                        topP: 0.9,
-                        stopSequences: []
-                    }
-                })
-            };
-        } else {
-            throw new Error(`Unsupported model type: ${BEDROCK_MODEL}`);
+        const client = createGeminiClient();
+        if (!client) {
+            throw new Error('Gemini client not available');
         }
 
-        console.log(`🤖 Invoking AI model: ${BEDROCK_MODEL}`);
+        const documentType = detectDocumentType(documentText);
+        console.log(`🤖 Invoking Gemini model: ${GEMINI_MODEL}`);
         
-        const command = new InvokeModelCommand(params);
-        const result = await bedrockClient.send(command);
-        const responseBody = JSON.parse(new TextDecoder().decode(result.body));
+        // Use the Gemini client to analyze the document
+        const result = await client.analyzeDocument(documentText, documentType);
         
-        let aiResponseText;
-        
-        // Handle different response formats
-        if (BEDROCK_MODEL.includes('anthropic.claude')) {
-            if (!responseBody.content || !responseBody.content[0] || !responseBody.content[0].text) {
-                throw new Error('Invalid response structure from Claude AI');
-            }
-            aiResponseText = responseBody.content[0].text;
-        } else if (BEDROCK_MODEL.includes('titan')) {
-            if (!responseBody.results || !responseBody.results[0] || !responseBody.results[0].outputText) {
-                throw new Error('Invalid response structure from Titan AI');
-            }
-            aiResponseText = responseBody.results[0].outputText;
+        if (result.success) {
+            const processingTime = Date.now() - startTime;
+            console.log(`✅ Gemini analysis completed successfully in ${processingTime}ms!`);
+            
+            return {
+                success: true,
+                analysis: result.analysis,
+                confidence: result.confidence,
+                startTime: startTime,
+                processingTime: processingTime,
+                tokenUsage: result.tokenUsage
+            };
+        } else {
+            throw new Error(result.error || 'Gemini analysis failed');
         }
-        
-        // Parse the AI response into structured analysis
-        const analysis = parseAIResponse(aiResponseText, documentText);
-        
-        const processingTime = Date.now() - startTime;
-        console.log(`✅ Real AI analysis completed successfully in ${processingTime}ms!`);
-        
-        return {
-            success: true,
-            analysis: analysis,
-            confidence: calculateAnalysisConfidence(analysis),
-            startTime: startTime,
-            processingTime: processingTime
-        };
         
     } catch (error) {
         const processingTime = Date.now() - startTime;
-        console.error('Bedrock analysis error:', error);
+        console.error('Gemini analysis error:', error);
+        
+        // Use error handler to determine if we should fallback
+        const errorResponse = await geminiErrorHandler.handleError(error, { 
+            documentText, 
+            attempt: 0 
+        });
+        
+        if (errorResponse.shouldFallback) {
+            // Create fallback analysis
+            const fallbackResult = geminiErrorHandler.createFallbackAnalysis(
+                documentText, 
+                errorResponse.error, 
+                errorResponse.message
+            );
+            
+            return {
+                success: true, // Fallback is considered successful
+                analysis: fallbackResult.analysis,
+                confidence: fallbackResult.confidence,
+                startTime: startTime,
+                processingTime: processingTime,
+                fallbackUsed: true,
+                originalError: error.message
+            };
+        }
         
         return {
             success: false,
@@ -321,292 +329,7 @@ async function analyzeWithBedrock(documentText) {
     }
 }
 
-/**
- * Parse AI response into structured format
- */
-function parseAIResponse(responseText, documentText) {
-    // Try to parse as JSON first
-    try {
-        let cleanedResponse = responseText.trim();
-        const jsonStart = cleanedResponse.indexOf('{');
-        const jsonEnd = cleanedResponse.lastIndexOf('}');
-        
-        if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
-            cleanedResponse = cleanedResponse.substring(jsonStart, jsonEnd + 1);
-            return JSON.parse(cleanedResponse);
-        }
-    } catch (parseError) {
-        console.log('JSON parsing failed, using text parsing...');
-    }
-    
-    // Fallback: parse structured text response
-    return parseStructuredTextResponse(responseText, documentText);
-}
-
-/**
- * Parse structured text response from Titan
- */
-function parseStructuredTextResponse(analysisText, documentText) {
-    const analysis = {
-        summary: {
-            documentType: extractSection(analysisText, 'DOCUMENT TYPE:') || detectDocumentType(documentText),
-            keyPurpose: "Contract analysis and risk assessment",
-            mainParties: extractParties(analysisText) || ["Party A", "Party B"],
-            effectiveDate: new Date().toISOString().split('T')[0],
-            expirationDate: null,
-            totalClausesIdentified: 0,
-            completenessScore: 90
-        },
-        clauses: [],
-        risks: [],
-        keyTerms: [],
-        recommendations: [],
-        qualityMetrics: {
-            clauseDetectionConfidence: 85,
-            analysisCompleteness: 90,
-            potentialMissedClauses: []
-        }
-    };
-    
-    // Extract clauses
-    const clausesSection = extractSection(analysisText, 'KEY CLAUSES IDENTIFIED:', 'RISKS IDENTIFIED:');
-    if (clausesSection) {
-        const clauseLines = clausesSection.split('\n').filter(line => line.trim().match(/^\d+\./));
-        clauseLines.forEach((line, index) => {
-            const clauseMatch = line.match(/^\d+\.\s*([^:]+):\s*(.+)/);
-            if (clauseMatch) {
-                const [, title, description] = clauseMatch;
-                analysis.clauses.push({
-                    id: `clause_${index + 1}`,
-                    title: title.trim(),
-                    content: description.trim(),
-                    category: categorizeClause(title),
-                    riskLevel: extractRiskLevel(description),
-                    explanation: description.trim(),
-                    sourceLocation: `Section ${index + 1}`,
-                    keyTerms: extractKeyTermsFromText(title + ' ' + description)
-                });
-            }
-        });
-        analysis.summary.totalClausesIdentified = analysis.clauses.length;
-    }
-    
-    // Extract risks
-    const risksSection = extractSection(analysisText, 'RISKS IDENTIFIED:', 'KEY TERMS:');
-    if (risksSection) {
-        const riskLines = risksSection.split('\n').filter(line => line.trim().match(/^\d+\./));
-        riskLines.forEach((line, index) => {
-            const riskMatch = line.match(/^\d+\.\s*([^:]+):\s*(.+)/);
-            if (riskMatch) {
-                const [, title, description] = riskMatch;
-                analysis.risks.push({
-                    id: `risk_${index + 1}`,
-                    title: title.trim(),
-                    description: description.trim(),
-                    severity: extractSeverity(description),
-                    category: categorizeRisk(title),
-                    recommendation: `Address ${title.toLowerCase()} through appropriate measures`,
-                    clauseReference: analysis.clauses[0]?.id || 'general',
-                    supportingText: description.trim()
-                });
-            }
-        });
-    }
-    
-    // Extract recommendations
-    const recommendationsSection = extractSection(analysisText, 'RECOMMENDATIONS:', 'OVERALL ASSESSMENT:');
-    if (recommendationsSection) {
-        const recLines = recommendationsSection.split('\n').filter(line => line.trim().match(/^\d+\./));
-        recLines.forEach((line, index) => {
-            const recMatch = line.match(/^\d+\.\s*([^:]*?):\s*(.+)/);
-            if (recMatch) {
-                const [, priority, action] = recMatch;
-                analysis.recommendations.push({
-                    priority: priority.toLowerCase().includes('high') ? 'high' : 
-                             priority.toLowerCase().includes('critical') ? 'critical' : 'medium',
-                    action: action.trim(),
-                    rationale: `Important for contract compliance and risk management`,
-                    affectedClauses: analysis.clauses.slice(0, 2).map(c => c.id)
-                });
-            }
-        });
-    }
-    
-    return analysis;
-}
-
-/**
- * Helper functions for parsing
- */
-function extractSection(text, startMarker, endMarker = null) {
-    const startIndex = text.indexOf(startMarker);
-    if (startIndex === -1) return null;
-    
-    const contentStart = startIndex + startMarker.length;
-    const endIndex = endMarker ? text.indexOf(endMarker, contentStart) : text.length;
-    
-    return text.substring(contentStart, endIndex === -1 ? text.length : endIndex).trim();
-}
-
-function extractParties(text) {
-    const partiesSection = extractSection(text, 'MAIN PARTIES:');
-    if (partiesSection) {
-        return partiesSection.split(',').map(p => p.trim()).filter(p => p.length > 0);
-    }
-    return ["Party A", "Party B"];
-}
-
-function categorizeClause(title) {
-    const titleLower = title.toLowerCase();
-    if (titleLower.includes('confidential') || titleLower.includes('disclosure')) return 'confidentiality';
-    if (titleLower.includes('payment') || titleLower.includes('fee')) return 'payment';
-    if (titleLower.includes('term') || titleLower.includes('duration')) return 'termination';
-    if (titleLower.includes('liability') || titleLower.includes('damage')) return 'liability';
-    if (titleLower.includes('intellectual') || titleLower.includes('property')) return 'intellectual_property';
-    if (titleLower.includes('warranty') || titleLower.includes('guarantee')) return 'warranty';
-    if (titleLower.includes('governing') || titleLower.includes('law')) return 'governing_law';
-    return 'general';
-}
-
-function extractRiskLevel(description) {
-    const descLower = description.toLowerCase();
-    if (descLower.includes('critical') || descLower.includes('severe')) return 'critical';
-    if (descLower.includes('high') || descLower.includes('significant')) return 'high';
-    if (descLower.includes('low') || descLower.includes('minor')) return 'low';
-    return 'medium';
-}
-
-function extractSeverity(description) {
-    return extractRiskLevel(description);
-}
-
-function categorizeRisk(title) {
-    const titleLower = title.toLowerCase();
-    if (titleLower.includes('financial') || titleLower.includes('payment') || titleLower.includes('cost')) return 'financial';
-    if (titleLower.includes('legal') || titleLower.includes('compliance') || titleLower.includes('regulatory')) return 'legal';
-    if (titleLower.includes('operational') || titleLower.includes('business') || titleLower.includes('process')) return 'operational';
-    return 'legal';
-}
-
-function extractKeyTermsFromText(text) {
-    const words = text.toLowerCase().split(/\s+/);
-    const importantWords = words.filter(word => 
-        word.length > 4 && 
-        !['agreement', 'contract', 'party', 'shall', 'will', 'may', 'must'].includes(word)
-    );
-    return importantWords.slice(0, 3);
-}
-
-/**
- * Create analysis prompt optimized for the current model
- */
-function createAnalysisPrompt(documentText, documentType) {
-    if (BEDROCK_MODEL && BEDROCK_MODEL.includes('titan')) {
-        return createTitanOptimizedPrompt(documentText);
-    }
-    
-    // Claude-optimized prompt
-    return `Analyze this legal contract and respond with ONLY a JSON object.
-
-Document Text:
-${documentText}
-
-Respond with this exact JSON structure:
-{
-  "summary": {
-    "documentType": "string",
-    "keyPurpose": "string", 
-    "mainParties": ["string"],
-    "effectiveDate": "string",
-    "expirationDate": "string",
-    "totalClausesIdentified": 0,
-    "completenessScore": 0
-  },
-  "clauses": [
-    {
-      "id": "clause_1",
-      "title": "string",
-      "content": "string", 
-      "category": "string",
-      "riskLevel": "low",
-      "explanation": "string",
-      "sourceLocation": "string",
-      "keyTerms": ["string"]
-    }
-  ],
-  "risks": [
-    {
-      "id": "risk_1",
-      "title": "string",
-      "description": "string",
-      "severity": "low", 
-      "category": "string",
-      "recommendation": "string",
-      "clauseReference": "string",
-      "supportingText": "string"
-    }
-  ],
-  "keyTerms": [
-    {
-      "term": "string",
-      "definition": "string", 
-      "importance": "low",
-      "context": "string"
-    }
-  ],
-  "recommendations": [
-    {
-      "priority": "low",
-      "action": "string",
-      "rationale": "string", 
-      "affectedClauses": ["string"]
-    }
-  ],
-  "qualityMetrics": {
-    "clauseDetectionConfidence": 0,
-    "analysisCompleteness": 0,
-    "potentialMissedClauses": ["string"]
-  }
-}`;
-}
-
-/**
- * Create Titan-optimized prompt
- */
-function createTitanOptimizedPrompt(documentText) {
-    return `Analyze this legal contract and provide a detailed analysis:
-
-${documentText.substring(0, 3000)}
-
-Please provide your analysis in the following format:
-
-DOCUMENT TYPE: [type of document]
-
-MAIN PARTIES: [list the parties involved]
-
-KEY CLAUSES IDENTIFIED:
-1. [Clause name]: [brief description and risk level]
-2. [Clause name]: [brief description and risk level]
-3. [Continue for all major clauses...]
-
-RISKS IDENTIFIED:
-1. [Risk title]: [description and severity level]
-2. [Risk title]: [description and severity level]
-3. [Continue for all risks...]
-
-KEY TERMS:
-- [Term]: [definition and importance]
-- [Term]: [definition and importance]
-
-RECOMMENDATIONS:
-1. [Priority level]: [specific action recommended]
-2. [Priority level]: [specific action recommended]
-3. [Continue for all recommendations...]
-
-OVERALL ASSESSMENT: [summary of document quality and completeness]
-
-Identify all major clauses including: confidentiality, payment terms, termination, liability, intellectual property, warranties, governing law, and dispute resolution.`;
-}
+// Legacy functions removed - now using Gemini client classes
 
 /**
  * Detect document type based on content
@@ -768,7 +491,7 @@ async function processDocumentComparison(requestBody) {
             },
             documentsAnalyzed: documents.length,
             processedAt: new Date().toISOString(),
-            model: BEDROCK_MODEL
+            model: GEMINI_MODEL
         });
 
     } catch (error) {

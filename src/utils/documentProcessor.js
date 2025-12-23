@@ -99,6 +99,10 @@ async function readFileAsText(file) {
       // For Excel files, we'll send a placeholder that indicates Excel processing is needed
       // The backend will handle the actual Excel parsing
       resolve(`[Excel Document: ${file.name}]\n\nThis is an Excel/CSV file that will be processed by the backend API. The file contains tabular data that will be analyzed for contract terms, financial information, and risk assessment.\n\nFile: ${file.name}\nSize: ${(file.size / 1024).toFixed(2)} KB\nType: ${file.type || 'Excel/CSV Document'}`)
+    } else if (fileExtension === 'pdf') {
+      // For PDF files, we need to send them to the backend for text extraction
+      // The backend should use AWS Textract or similar to extract text
+      resolve(`[PDF Document: ${file.name}]\n\nThis is a PDF file that needs text extraction. The backend will use AWS Textract to extract the readable text content for contract analysis.\n\nFile: ${file.name}\nSize: ${(file.size / 1024).toFixed(2)} KB\nType: PDF Document\n\nNote: Please upload the document to S3 first, then use the S3 key for analysis to enable proper PDF text extraction.`)
     } else {
       // For text-based files, read as text
       const reader = new FileReader()
@@ -224,6 +228,11 @@ export async function processTextInput(text, options = {}) {
 
     const analysisResult = await response.json()
     console.log('processTextInput: Received API analysis result:', analysisResult)
+    console.log('📥 FRONTEND RECEIVED:');
+    console.log('- Analysis object:', analysisResult.analysis);
+    console.log('- Clauses count:', analysisResult.analysis?.clauses?.length || 0);
+    console.log('- Risks count:', analysisResult.analysis?.risks?.length || 0);
+    console.log('🔍 RAW API RESPONSE:', JSON.stringify(analysisResult, null, 2));
     results.progress = 90
 
     // Format results to match expected structure
@@ -432,51 +441,68 @@ export function transformAnalysisForUI(analysisData) {
   console.log('transformAnalysisForUI: Input data:', analysisData)
   const { analysis, extraction, document, metadata } = analysisData
 
-  // Handle both old format (analysis nested) and new format (analysis is the root)
-  const analysisResult = analysis.summary ? analysis : analysis
+  // Handle the analysis data - it should already be in the correct format from Gemini
+  const analysisResult = analysis || {}
+
+  console.log('transformAnalysisForUI: Analysis result:', analysisResult)
+  console.log('transformAnalysisForUI: Clauses:', analysisResult.clauses)
+  console.log('transformAnalysisForUI: Risks:', analysisResult.risks)
 
   const result = {
     summary: {
-      title: analysisResult.summary?.title || analysisResult.summary?.documentType || 'AI Contract Analysis',
+      title: analysisResult.summary?.documentType || 'AI Contract Analysis',
       totalClauses: analysisResult.clauses?.length || 0,
       riskScore: analysisResult.summary?.riskScore || calculateRiskScore(analysisResult.risks || []),
       keyFindings: [
-        analysisResult.summary?.title || 'AI-powered contract analysis completed',
-        `Processed with ${Math.round(metadata.confidence || 95)}% confidence using ${metadata.processingMethod || 'AI model'}`,
+        analysisResult.summary?.documentType || 'AI-powered contract analysis completed',
+        `Processed with ${Math.round(metadata?.confidence || 95)}% confidence using ${metadata?.model || 'AI model'}`,
         `${analysisResult.clauses?.length || 0} clauses identified and categorized`,
         `${analysisResult.risks?.length || 0} risks detected and assessed`,
-        `Processing time: ${metadata.processingTime || 0}ms`
+        `Processing time: ${metadata?.processingTime || 0}ms`
       ]
     },
     clauses: (analysisResult.clauses || []).map(clause => ({
       id: clause.id,
-      title: clause.category || clause.type || 'Contract Clause',
-      text: clause.text || clause.content,
-      type: clause.type,
+      title: clause.title || clause.category || 'Contract Clause',
+      text: clause.content || clause.text,
+      type: clause.category,
       category: clause.category,
-      confidence: clause.confidence,
-      riskLevel: determineClauseRiskLevel(clause, analysisResult.risks || []),
-      explanation: generateClauseExplanation(clause)
+      confidence: clause.confidence || 95,
+      riskLevel: clause.riskLevel || 'low',
+      explanation: clause.explanation || generateClauseExplanation(clause)
     })),
-    risks: calculateRiskCounts(analysisResult.risks || []),
+    risks: (analysisResult.risks || []).map(risk => ({
+      level: risk.severity || 'low',
+      count: 1,
+      color: getRiskColor(risk.severity || 'low'),
+      title: risk.title,
+      description: risk.description,
+      recommendation: risk.recommendation
+    })),
     metadata: {
       ...metadata,
       document: document,
       extraction: {
-        method: extraction?.method || metadata.processingMethod,
-        confidence: extraction?.confidence || metadata.confidence,
+        method: extraction?.method || metadata?.processingMethod,
+        confidence: extraction?.confidence || metadata?.confidence,
         textLength: extraction?.text?.length || document?.size || 0
       },
       aiAnalysis: {
-        modelUsed: metadata.model || metadata.modelUsed,
-        processingMethod: metadata.processingMethod,
-        processingTime: metadata.processingTime,
-        confidence: metadata.confidence
+        modelUsed: metadata?.model || metadata?.modelUsed,
+        processingMethod: metadata?.processingMethod,
+        processingTime: metadata?.processingTime,
+        confidence: metadata?.confidence
       }
     },
     // Include error details if present
-    errorDetails: metadata.errorDetails
+    errorDetails: metadata?.errorDetails
   }
+
+  // 🔥 CRITICAL DEBUG - EXACTLY WHAT FRONTEND WILL SEE
+  console.log('🚨 FINAL UI RESULT - WHAT FRONTEND GETS:')
+  console.log('- summary.totalClauses:', result.summary.totalClauses)
+  console.log('- clauses.length:', result.clauses.length)
+  console.log('- risks.length:', result.risks.length)
 
   console.log('transformAnalysisForUI: Output result:', result)
   return result
@@ -485,6 +511,16 @@ export function transformAnalysisForUI(analysisData) {
 /**
  * Helper functions
  */
+function getRiskColor(severity) {
+  const colors = {
+    critical: '#dc2626',
+    high: '#ef4444',
+    medium: '#f59e0b',
+    low: '#10b981'
+  }
+  return colors[severity?.toLowerCase()] || '#6b7280'
+}
+
 function calculateRiskScore(risks) {
   if (!risks || risks.length === 0) return 0
 

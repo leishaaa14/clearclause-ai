@@ -5,7 +5,9 @@
 
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
 import { TextractClient, DetectDocumentTextCommand } from '@aws-sdk/client-textract'
-import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime'
+import { GeminiClient } from './ai/GeminiClient.js'
+import { GeminiErrorHandler } from './ai/GeminiErrorHandler.js'
+import { GeminiResponseParser } from './ai/GeminiResponseParser.js'
 import dotenv from 'dotenv'
 
 // Load environment variables
@@ -22,21 +24,34 @@ const AWS_CONFIG = {
     retryMode: 'standard'
 }
 
-// Initialize AWS clients
+// Initialize AWS clients (S3 and Textract still needed)
 const s3Client = new S3Client(AWS_CONFIG)
 const textractClient = new TextractClient(AWS_CONFIG)
 
-function createBedrockClient() {
-    return new BedrockRuntimeClient(AWS_CONFIG);
+// Initialize Gemini client and utilities
+let geminiClient = null
+const geminiErrorHandler = new GeminiErrorHandler()
+const geminiResponseParser = new GeminiResponseParser()
+
+function createGeminiClient() {
+    if (!geminiClient) {
+        try {
+            geminiClient = new GeminiClient()
+        } catch (error) {
+            console.error('Failed to initialize Gemini client:', error.message)
+            geminiClient = null
+        }
+    }
+    return geminiClient
 }
 
 // Configuration constants
 const S3_BUCKET = process.env.VITE_S3_BUCKET
-const BEDROCK_MODEL = process.env.VITE_BEDROCK_MODEL
+const GEMINI_MODEL = process.env.VITE_GEMINI_MODEL || 'gemini-1.5-pro'
 
-console.log('🔧 Current Configuration:');
-console.log('- S3 Bucket:', S3_BUCKET);
-console.log('- Bedrock Model:', BEDROCK_MODEL);
+console.log('🔧 Current Configuration:')
+console.log('- S3 Bucket:', S3_BUCKET)
+console.log('- AI Model:', GEMINI_MODEL, '(Gemini)')
 
 /**
  * Main serverless function handler
