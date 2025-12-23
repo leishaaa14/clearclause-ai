@@ -1,26 +1,65 @@
-import { GoogleGenerativeAI } from '@google/generative-ai'
-import dotenv from 'dotenv'
+/**
+ * Check what Gemini models are actually available
+ */
 
-dotenv.config()
+import { GoogleGenerativeAI } from '@google/generative-ai';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+const API_KEY = process.env.VITE_GOOGLE_AI_API_KEY;
 
 async function checkAvailableModels() {
     try {
-        const genAI = new GoogleGenerativeAI(process.env.VITE_GOOGLE_AI_API_KEY)
+        console.log('🔍 Checking available Gemini models...');
         
-        // List available models
-        const models = await genAI.listModels()
+        const genAI = new GoogleGenerativeAI(API_KEY);
         
-        console.log('Available Gemini models:')
-        models.forEach(model => {
-            console.log(`- ${model.name} (${model.displayName})`)
-            if (model.supportedGenerationMethods) {
-                console.log(`  Supported methods: ${model.supportedGenerationMethods.join(', ')}`)
+        // Try to list models
+        console.log('\n1️⃣ Attempting to list available models...');
+        
+        // Try different model names that might work
+        const modelsToTest = [
+            'gemini-pro',
+            'gemini-1.5-pro',
+            'gemini-1.5-flash',
+            'gemini-2.0-flash-exp',
+            'models/gemini-pro',
+            'models/gemini-1.5-pro',
+            'models/gemini-1.5-flash'
+        ];
+        
+        for (const modelName of modelsToTest) {
+            try {
+                console.log(`\n2️⃣ Testing model: ${modelName}`);
+                
+                const model = genAI.getGenerativeModel({ 
+                    model: modelName,
+                    generationConfig: {
+                        temperature: 0.2,
+                        maxOutputTokens: 50,
+                    }
+                });
+                
+                const result = await model.generateContent({
+                    contents: [{
+                        parts: [{ text: "Hello" }]
+                    }]
+                });
+                
+                const response = await result.response;
+                const text = response.text();
+                
+                console.log(`✅ ${modelName} - WORKS! Response: ${text.substring(0, 50)}...`);
+                
+            } catch (error) {
+                console.log(`❌ ${modelName} - FAILED: ${error.message.substring(0, 100)}...`);
             }
-        })
+        }
         
     } catch (error) {
-        console.error('Error listing models:', error.message)
+        console.error('❌ Error checking models:', error.message);
     }
 }
 
-checkAvailableModels()
+checkAvailableModels();
